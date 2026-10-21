@@ -1,0 +1,12 @@
+Beyond the I/O Wall: Hiding I/O Latency in Task-Based Runtime Systems
+
+In traditional parallel applications (MPI+OpenMP), I/O operations
+typically block the execution, stalling computation until they
+complete. In task-based runtime systems such as StarPU, dynamic and
+asynchronous scheduling of the task dependency graph allows I/O
+operations to overlap with other computational tasks, masking part of
+this cost. This work investigates how far this masking can actually
+holds in I/O-bound applications running on StarPU, points where this
+masking effect reaches its limit (the so-called "IO Wall"), and
+proposes/evaluates strategies within StarPU's task-based model to
+mitigate this limit when possible.

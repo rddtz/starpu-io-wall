@@ -1,0 +1,48 @@
+#!/bin/bash
+
+STORE_BASE="${SCRATCH:-$HOME/scratch}"
+STORE_DIR="$STORE_BASE/nix-data"
+LOCK_FILE="$STORE_BASE/nix_install.lock"
+
+NP_BIN_DIR="$STORE_BASE/np-bin"
+NP_BIN="$NP_BIN_DIR/nix"
+
+export XDG_CACHE_HOME="$STORE_BASE/.cache"
+mkdir -p "$XDG_CACHE_HOME"
+
+NIX_CONF_DIR="$XDG_CACHE_HOME/nix-config"
+NIX_CONF_FILE="$NIX_CONF_DIR/nix.conf"
+
+if [ ! -f "$NIX_CONF_FILE" ]; then
+    mkdir -p "$NIX_CONF_DIR"
+    echo "experimental-features = nix-command flakes" > "$NIX_CONF_FILE"
+fi
+# 3. INSTALLATION LOGIC (Download nix-portable)
+if [ ! -x "$NP_BIN" ]; then
+    (
+        flock -x -w 600 200 || exit 1
+
+        if [ ! -x "$NP_BIN" ]; then
+            echo " [Node-Installer] Downloading nix-portable to local scratch..."
+
+            mkdir -p "$NP_BIN_DIR"
+
+            curl -L "https://github.com/DavHau/nix-portable/releases/latest/download/nix-portable-$(uname -m)" -o "$NP_BIN"
+            chmod +x "$NP_BIN"
+        fi
+    ) 200>"$LOCK_FILE"
+fi
+
+export NP_LOCATION="$STORE_DIR"
+
+export NP_RUNTIME="bwrap"
+
+export NIX_USER_CONF_FILES="$NIX_CONF_FILE"
+
+export PATH="$NP_BIN_DIR:$PATH"
+
+if [ "$#" -eq 0 ]; then
+    exec bash
+else
+    exec "$@"
+fi

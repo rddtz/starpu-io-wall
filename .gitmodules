@@ -1,0 +1,4 @@
+[submodule "star-fletcher"]
+	path = star-fletcher
+	url = git@github.com:rddtz/star-fletcher.git
+	branch = io-direct
