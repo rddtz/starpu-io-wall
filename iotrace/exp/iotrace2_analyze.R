@@ -2,9 +2,12 @@
 # defined by the StarFletcher anchors, and plot the StarVZ timeline with the
 # disk I/O on the same time axis.
 #
-# Usage: Rscript iotrace2_analyze.R RUN_DIR OUT_DIR
+# Usage: Rscript iotrace2_analyze.R RUN_DIR OUT_DIR CONFIG
 #   RUN_DIR: output of iotrace2_run.sh, with fxt/ already processed by StarVZ
 #   OUT_DIR: new directory for summary.csv and timeline.{pdf,png}
+#   CONFIG:  StarVZ yaml (star-fletcher/config.yaml); its active panels are
+#            drawn above the I/O panels, with the time limits widened to
+#            include the writeback after exit
 #
 # Time base: StarVZ time (ms). FxT and iotrace both use CLOCK_MONOTONIC, so
 # anchor 1 (start), present in stdout (ns) and in the FxT user events (StarVZ
@@ -20,9 +23,10 @@ suppressMessages({
 })
 
 args <- commandArgs(trailingOnly = TRUE)
-stopifnot(length(args) == 2)
+stopifnot(length(args) == 3)
 run_dir <- args[1]
 out_dir <- args[2]
+config_file <- args[3]
 stopifnot(!dir.exists(out_dir))
 dir.create(out_dir, recursive = TRUE)
 
@@ -108,9 +112,12 @@ vline_layer <- list(
   coord_cartesian(xlim = x_lim)
 )
 
-data <- starvz_read(file.path(run_dir, "fxt"), selective = FALSE)
-p_st <- panel_st(data) + vline_layer +
-  labs(title = "StarPU tasks (StarVZ) and disk writes", x = NULL)
+data <- starvz_read(file.path(run_dir, "fxt"), config_file = config_file,
+                    selective = FALSE)
+data$config <- modifyList(starvz:::starvz_default_config(), data$config)
+data$config$limits$start <- x_lim[1]
+data$config$limits$end <- x_lim[2]
+p_starvz <- starvz_assemble(starvz_plot_list(data), config = data$config)
 
 bin_ms <- 100
 disk_rate <- disk_w %>%
@@ -135,7 +142,11 @@ p_cum <- ggplot(cum, aes(x = t_ms, y = mib)) +
   labs(x = "time (ms, StarVZ base)", y = ".rsf@ written\nback (MiB)") +
   theme_bw()
 
-fig <- p_st / p_rate / p_cum + plot_layout(heights = c(3, 1.2, 1.2))
-ggsave(file.path(out_dir, "timeline.pdf"), fig, width = 10, height = 7)
-ggsave(file.path(out_dir, "timeline.png"), fig, width = 10, height = 7, dpi = 150)
+# "/" appends to the StarVZ patchwork (same x alignment), so the heights are
+# the StarVZ ones plus one per I/O panel
+h_starvz <- unlist(p_starvz$patches$layout$heights)
+fig <- p_starvz / p_rate / p_cum +
+  plot_layout(heights = c(h_starvz, rep(sum(h_starvz) * 0.22, 2)))
+ggsave(file.path(out_dir, "timeline.pdf"), fig, width = 10, height = 10)
+ggsave(file.path(out_dir, "timeline.png"), fig, width = 10, height = 10, dpi = 150)
 cat("written:", out_dir, "\n")
