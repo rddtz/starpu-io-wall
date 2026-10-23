@@ -149,4 +149,23 @@ fig <- p_starvz / p_rate / p_cum +
   plot_layout(heights = c(h_starvz, rep(sum(h_starvz) * 0.22, 2)))
 ggsave(file.path(out_dir, "timeline.pdf"), fig, width = 10, height = 10)
 ggsave(file.path(out_dir, "timeline.png"), fig, width = 10, height = 10, dpi = 150)
+
+# compact figure: only the iteration panel and the disk writes
+cfg_it <- data$config
+for (k in names(cfg_it)) {
+  if (k != "kiteration" && is.list(cfg_it[[k]]) && !is.null(cfg_it[[k]]$active)) {
+    cfg_it[[k]]$active <- FALSE
+  }
+}
+data_it <- data
+data_it$config <- cfg_it
+p_it <- starvz_assemble(starvz_plot_list(data_it), config = cfg_it)
+h_it <- unlist(p_it$patches$layout$heights)
+p_rate_lab <- p_rate +
+  annotate("text", x = vlines$t_ms, y = Inf, label = vlines$name,
+           angle = 90, vjust = -0.4, hjust = 1.1, size = 3) +
+  labs(x = "time (ms, StarVZ base)")
+fig_it <- p_it / p_rate_lab + plot_layout(heights = c(h_it, sum(h_it)))
+ggsave(file.path(out_dir, "timeline_iter_write.pdf"), fig_it, width = 10, height = 5)
+ggsave(file.path(out_dir, "timeline_iter_write.png"), fig_it, width = 10, height = 5, dpi = 150)
 cat("written:", out_dir, "\n")
