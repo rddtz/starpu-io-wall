@@ -5,6 +5,7 @@
 #+TITLE: Notes on TCC work
 #+AUTHOR: Rayan Raddatz de Matos
 #+TODO: TODO NEXT DOING BLOCKED | DONE CANCELED
+#+ARCHIVE: ::* Archive
 
 
 * Work
@@ -1009,7 +1010,7 @@ Consequences [H, to be measured]:
 7. main.c:749-755 and 823-828 (timing end, =munmap/close=)
 8. io.c:176-219 (commented =O_DIRECT= alternative)
 
-* Backlog
+* Project context
 
 Direct I/O in StarFletcher (created 15-10-2026, ex-SPECS.org; migrated to
 the task template on 22-10-2026).
@@ -1066,6 +1067,7 @@ dependencies via org-edna =:BLOCKER:=; board =C-c a b=.
 References: =open(2)=, =statx(2)= (man7.org); =RRNotes.org= (05-10 and
 14-10-2026); =pwrite-test/=.
 
+* Backlog
 ** TODO [#B] T1: Disk logical sector and STATX_DIOALIGN :test:direct:
 :PROPERTIES:
 :ID:       t1
@@ -1540,3 +1542,6 @@ Main idea: Different from MPI+OPENMP applications, where IO operations
 stops the application, in a task-based parallelism system we can let
 CPU only to write data. How far can this go? What more can we do to
 mask communication costs in IO-bounded applications in Task-Based applications?
+
+* Archive
+DONE / CANCELED tasks from * Backlog (C-c C-x C-a).
