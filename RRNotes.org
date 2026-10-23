@@ -1481,6 +1481,13 @@ output does not hit the traced disk. Script: iotrace_tests.sh (run as root).
     setcap only (criterion 4).
 - Why did the flusher start at +4.9 s / +10 s after exit and not after
   =dirty_expire_centisecs= (30 s)? Not checked; matters for T6.
+- Option A (not done): put the file inode in rq_issue/rq_complete via
+  =rq->bio->bi_io_vec[0].bv_page->mapping->host->i_ino= (skip anon pages),
+  carried to complete by the =inflight= map. Gives the disk completion time
+  per file for kworker writeback. Not needed now: =wb_inode= gives exact bytes
+  per file (submit time) and =pid= covers O_DIRECT and msync/fsync (process
+  issues its own requests). Do it if other I/O on =sda= in PCAD pollutes the
+  time-window attribution. Validate with =filefrag -v= sectors (option B).
 *** Log
 - 22-10-2026, notebook (6.1.0-44, nvme0n1 259:0), N = 256 MiB = 268435456 B,
   0 dropped events in all runs. Branch =iotrace1=.
