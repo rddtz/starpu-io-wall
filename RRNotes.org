@@ -1656,6 +1656,49 @@ iotrace/exp/iotrace2_starvz.sh <starvz-tools> data/local/iotrace2/<run>
     panels in the same patchwork (aligned x). New figure:
     =analysis-20261022-234152/timeline.png=; summary unchanged.
 
+** NEXT [#A] IOTRACE3: Attribute disk writes to the submitter (block_bio_queue) :impl:ebpf:io:
+:PROPERTIES:
+:ID:       iotrace3
+:CREATED:  [2026-10-23 Fri]
+:ENV:      local:linux-root (Debian notebook)
+:END:
+*** Description
+iotrace takes comm/pid at block_rq_issue (dispatch to the driver). In IRQ
+context this gives the idle task (swapper/N), and deferred dispatch gives
+kblockd (kworker/N:1H) instead of who asked. Add block_bio_queue to record
+the submitter (flusher, jbd2, process), and show it in the IOTRACE2 figure.
+Bytes, times and wb_inode are correct and not affected. The PCAD admin
+request is on hold until this is done (binary and sha256 will change).
+*** Scope
+- In: new event bio_queue (ts, dev, sector, bytes, op, pid, comm) filtered
+  by device; attribution by submission (no linking to rq events); figure:
+  color by submitter, flusher (kworker/u*) and jbd2 separate, the app
+  grouped by pid; rerun IOTRACE1 tests and IOTRACE2 (same args).
+- Out: PCAD install; linking bios to requests by sector; dirty pages.
+*** Related files
+- [[file:iotrace/iotrace.bpf.c]]
+- [[file:iotrace/iotrace.c]]
+- [[file:iotrace/iotrace.h]]
+- [[file:iotrace/exp/iotrace2_analyze.R]]
+*** Acceptance criteria [0/5]
+- [ ] Builds with the Makefile, no errors/warnings; 0 dropped events.
+- [ ] dd oflag=direct of N MB: bio_queue W bytes with comm=dd == N exactly.
+- [ ] mmap_write of N MB: bio_queue W bytes by kworker/u* after exit
+      within 5% of N; no bio_queue bytes attributed to swapper/*.
+- [ ] IOTRACE2 rerun: figure colored by submitter (flusher, jbd2, app pid),
+      no swapper; flusher bytes after exit within 5% of the .rsf@ size.
+- [ ] Runs as a normal user with setcap; new sha256 recorded for the admin.
+*** Verification
+(exact commands written while implementing)
+*** Open questions
+- Event volume/overhead of one event per bio (writeback bios are usually
+  large; not measured).
+- Does flushing a plug from another context ever change the submitter seen
+  at block_bio_queue? (not checked)
+- Verified: block_bio_queue(struct bio *bio) exists in Linux 6.1
+  (include/trace/events/block.h).
+*** Log
+
 * Resume for TCC
 
 *Title:* Beyond the I/O Wall: Hiding I/O Latency in Task-Based Runtime Systems
