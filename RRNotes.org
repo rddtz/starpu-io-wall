@@ -1649,6 +1649,23 @@ iotrace/exp/iotrace2_starvz.sh <starvz-tools> data/local/iotrace2/<run>
   - write_block median 0.36 ms, but at ~30.7 s three workers were stuck
     650-706 ms at the same time (write_block = 5.4% of worker time). Cause
     not verified (dirty throttling or waiting on a page under writeback).
+- 23-10-2026, repeat =iotrace2-20261023-021233= (same args, to check if
+  the write_block stall was the environment). Figures with
+  =iotrace/exp/starvz_st.yaml= (Gantt only): =analysis-20261023-021528/=
+  (run 1 re-plotted: =analysis-20261023-021438/=). Computation 48.79 s
+  (run 1: 45.27 s). Interference: during this run I ran =python3= and
+  =git commit= (small disk writes, shown in the disk W panel).
+  | run | during | after exit | dirtied/file | stalls >100 ms | max | write_block share |
+  |-----+--------+------------+--------------+----------------+-----+-------------------|
+  | 1   | 91.2%  | 8.8%       | +6.8%        | 5              | 706 ms  | 5.4% |
+  | 2   | 92.8%  | 7.2%       | +12.4%       | 12             | 1604 ms | 8.4% |
+  - Run 2 also has vmscan passes (428 MB of the file; free RAM at start
+    0.8 GB vs 1.3 GB in run 1): memory pressure pushed writeback too.
+  - Stalls happen in both runs, at different times (run 1: 25.6, 30.7 s;
+    run 2: 25.5, 26.3, 32.5, 35.6, 40.6 s), so not a one-off of the
+    environment. All of them overlap a writeback pass, but 76-80% of random
+    1.3 s windows also do, so this does not prove the cause.
+  - Still all dirty pages of the file from the SF pid (14868, CPU 0..3).
 
 * Resume for TCC
 
