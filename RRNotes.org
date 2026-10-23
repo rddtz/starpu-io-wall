@@ -10,6 +10,44 @@
 
 * Work
 ** 2026 Week 43 [Oct]
+*** 23-10-2026: iotrace on PCAD without system downloads
+Admin should not install packages. Plan: static iotrace built with Nix
+(=iotrace/flake.nix=, =pkgsStatic=), run outside =nixw= (file caps do not
+apply inside the bwrap user namespace); admin only runs =install= + =setcap=.
+
+**** Check setcap tools on cei2                                         :AI:
+Read-only: is =setcap= (libcap2-bin) or =setfattr= (attr) present, is
+=/usr/local/bin= mounted without =nosuid= (file caps are ignored on nosuid),
+and the =MAJ:MIN= of =sda=.
+
+#+begin_src slurm :host pcad :partition cei :nodelist cei2 :ntasks 1 :cpus 1 :mem 1G :time 00:05:00 :errors yes :job-name setcap-check
+s() { echo; echo "== $*"; }
+s host;      hostname; uname -r; grep -E '^(ID|VERSION_ID)=' /etc/os-release
+s tools;     for t in setcap getcap setfattr getfattr capsh; do printf '%s: ' $t; command -v $t || ls /sbin/$t /usr/sbin/$t 2>/dev/null || echo missing; done
+s pkgs;      dpkg-query -W -f='${Package} ${Version} ${Status}\n' libcap2-bin attr libbpf1 2>&1
+s mount;     findmnt -T /usr/local/bin -no SOURCE,FSTYPE,OPTIONS
+s disks;     lsblk -o NAME,MAJ:MIN,TYPE,MOUNTPOINT
+#+end_src
+
+Run via =sbatch= over ssh (same body), all =cei= nodes were allocated, so on
+=draco= (job 832801, =draco1=; same OS/kernel as =cei2=). Job 832800 (any
+=cei=) left in the queue.
+#+begin_example
+draco1  6.1.0-45-amd64  debian 12
+setcap: /usr/sbin/setcap   getcap: /usr/sbin/getcap   capsh: /usr/sbin/capsh
+setfattr/getfattr: missing (package attr not installed)
+libcap2-bin 1:2.66-4+deb12u3+b1 installed
+libbpf1     1:1.1.2-0+deb12u1   installed
+/usr/local/bin on /dev/sda1 ext4 rw,relatime,errors=remount-ro (no nosuid)
+sda 8:0 disk, sda1 8:1 /, sdb 8:16 disk
+#+end_example
+- =setcap= is available and =/= has no =nosuid=: the admin needs no new
+  package for =install= + =setcap=.
+- =libbpf1= 1.1.2 is already installed (runtime lib only, no headers,
+  =clang= or =bpftool=), so a dynamic build against it would also run; the
+  static Nix build avoids depending on it.
+- Not verified on =cei2= itself (assumed same image as =draco1=).
+
 *** 22-10-2026: Measure mmap I/O outside StarPU time
 Goal: measure how much of the mmap I/O happens after the StarPU tasks end
 (kernel writeback), which the StarPU trace does not see. Idea: eBPF on the
