@@ -1617,6 +1617,38 @@ iotrace/exp/iotrace2_starvz.sh <starvz-tools> data/local/iotrace2/<run>
     panels (Iteration, Application Workers, Submitted, Ready) with the I/O
     panels in the same patchwork (aligned x). New figure:
     =analysis-20261022-234152/timeline.png=; summary unchanged.
+- 23-10-2026, iotrace extended (=iotrace-dirty= branch): =dirty= event
+  (=writeback_dirty_folio=: inode, page index, pid/comm of the task that
+  dirtied the page) and =wb_start= (=writeback_start=: reason of each
+  writeback pass). Validated with =mmap_write= 256 MiB: dirty events of the
+  file = 268435456 B exactly, all =comm=mmap_write=. Side finding: rewriting
+  an existing file with =O_TRUNC= triggers ext4 =auto_da_alloc= (flush at
+  close), so ~104 MB were issued by the process before exit; the =.rsf@= is
+  always a new file, so this does not apply to StarFletcher.
+- 23-10-2026, run =iotrace2-20261023-020353= (forced writeback during the
+  run): =TTI 176 176 176 8 12.5 12.5 12.5 0.0001 0.01 4 0.0001= (volume 200^3,
+  blocks 50^3 = 500 KB, output every iteration, 101 frames x 32 MB, =.rsf@=
+  3232000000 B), STARPU_NCPU=4, 1 run. Computation 45.27 s, 0 dropped
+  events, clock error 0.45 us. Analysis: =analysis-20261023-020721/=.
+  - Who dirtied the file (measured, no longer assumed): all 842854 dirty
+    events of the inode come from sf_pid 10552, threads =CPU 0..3= (StarPU
+    workers), all between =start= and =tasks_done=.
+  - Re-dirty: 789063 unique pages (= file) but 50503 pages dirtied twice, so
+    3452329984 B were dirtied and written back (+6.8% over the file). A page
+    holds data of neighbouring blocks; it is written back after the first
+    block and dirtied again by the next one: write amplification caused by
+    writeback during the run.
+  - Written back (=wb_inode=): start -> tasks_done 3147792384 B (91.2%),
+    tasks_done -> exit 0, after exit 304537600 B (8.8%, until exit+6.6 s).
+    Block level W: 3.10 GB during, 8 MB between, 357 MB after exit.
+  - Trigger (=wb_start= on the same flusher thread): periodic 2860933120 B
+    (80 calls), background 591396864 B (27 calls); first background at
+    ~3.9 s after start. Periodic dominates although the pages are young:
+    likely because the inode =dirtied_when= is not reset while it stays
+    dirty, so after 30 s the whole inode is "old" for kupdate (not verified).
+  - write_block median 0.36 ms, but at ~30.7 s three workers were stuck
+    650-706 ms at the same time (write_block = 5.4% of worker time). Cause
+    not verified (dirty throttling or waiting on a page under writeback).
 
 * Resume for TCC
 
