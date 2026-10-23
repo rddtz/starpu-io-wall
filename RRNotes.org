@@ -1538,7 +1538,9 @@ CLOCK_MONOTONIC anchors in the app to align eBPF events with the FxT trace.
 *** Acceptance criteria [0/4]
 - [ ] StarFletcher runs on the notebook with STARPU_NCPU=4, FxT on, iotrace
       on the same device, in the same run.
-- [ ] The 4 anchors appear in stdout and as user events in the FxT trace.
+- [ ] The 4 anchors appear in stdout; anchors 1-2 (start, tasks_done) also
+      as user events in the FxT trace (3-4 come after starpu_shutdown, when
+      FxT is closed; moving io_state_finish before it is IMPL1 scope).
 - [ ] Total bytes written to the device (app + kworker*) within 5% of the
       .rsf@ file size.
 - [ ] Bytes reported in the 3 intervals, and one figure with the StarVZ
