@@ -1,0 +1,7 @@
+vmlinux.h
+*.skel.h
+*.o
+*.tmp
+/iotrace
+/test/mmap_write
+*.csv
