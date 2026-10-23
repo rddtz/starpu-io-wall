@@ -102,6 +102,40 @@ print(summary)
 cat("file writeback first/last after exit (s):",
     (min(file_wb$t_ms) - a["exit"]) / 1e3, (max(file_wb$t_ms) - a["exit"]) / 1e3, "\n")
 
+# ---- who dirtied the file, and why writeback ran (iotrace with dirty/wb_start)
+sf_pid <- suppressWarnings(as.numeric(sub("^sf_pid=", "", grep("^sf_pid=", env, value = TRUE))))
+if (any(io$event == "dirty")) {
+  dirtiers <- io %>%
+    filter(event == "dirty", inode == !!inode) %>%
+    mutate(interval = interval_of(t_ms)) %>%
+    group_by(pid, comm, interval) %>%
+    summarise(bytes = sum(bytes), pages = n(), .groups = "drop") %>%
+    mutate(is_sf = length(sf_pid) == 1 & as.numeric(pid) == sf_pid,
+           pct_of_file = 100 * bytes / file_size)
+  write_csv(dirtiers, file.path(out_dir, "file_dirtied_by.csv"))
+  cat("pages of the file dirtied, by process (sf_pid =", sf_pid, "):\n")
+  print(dirtiers)
+}
+if (any(io$event == "wb_start")) {
+  wb_passes <- io %>%
+    filter(event == "wb_start") %>%
+    transmute(pass_ms = t_ms, t_after_exit_s = (t_ms - a["exit"]) / 1e3,
+              reason = op, requested_bytes = bytes, pid, comm)
+  write_csv(wb_passes, file.path(out_dir, "writeback_passes.csv"))
+  # pass that was running on the same flusher thread when each file
+  # writeback call happened (several flusher threads run at the same time)
+  file_wb_reason <- file_wb %>%
+    left_join(wb_passes %>% select(pid, pass_ms, reason),
+              by = join_by(pid, closest(t_ms >= pass_ms))) %>%
+    mutate(reason = coalesce(reason, "none")) %>%
+    group_by(reason) %>%
+    summarise(bytes = sum(bytes), calls = n(),
+              first_after_exit_s = (min(t_ms) - a["exit"]) / 1e3, .groups = "drop")
+  write_csv(file_wb_reason, file.path(out_dir, "file_writeback_by_reason.csv"))
+  cat("file writeback by triggering reason:\n")
+  print(file_wb_reason)
+}
+
 # ---- figure ---------------------------------------------------------------------
 x_max <- max(file_wb$t_ms, a["exit"]) + 500
 x_lim <- c(min(0, a["start"]), x_max)
