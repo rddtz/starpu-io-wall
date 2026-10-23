@@ -1556,7 +1556,7 @@ nix build github:schnorr/starvz \
 cd .. && iotrace/exp/iotrace2_run.sh ~/sf-runs/result-trace/bin/star-fletcher
 iotrace/exp/iotrace2_starvz.sh <starvz-tools> data/local/iotrace2/<run>
 <starvz R>/bin/Rscript iotrace/exp/iotrace2_analyze.R data/local/iotrace2/<run> \
-  data/local/iotrace2/<run>/analysis-<date>
+  data/local/iotrace2/<run>/analysis-<date> star-fletcher/config.yaml
 #+end_src
 - =iotrace2_run.sh=: iotrace (setcap, no sudo) on 259:0, StarFletcher with
   STARPU_NCPU=4 + FxT, 60 s of tracing after exit; io.csv and FxT on
@@ -1603,6 +1603,20 @@ iotrace/exp/iotrace2_starvz.sh <starvz-tools> data/local/iotrace2/<run>
   - StarVZ needed a workaround: starpu_fxt_tool puts main-thread user events
     as =user_user_event= on container =p=, which pj_dump rejects; renamed to
     =user_event= in a copy (=iotrace2_starvz.sh=).
+- 22-10-2026, StarVZ iteration bug: the Iteration panel showed only 0.
+  Cause: StarPU 1.4 added =Priority= to the task states (PajeSetState 20),
+  the StarVZ worker CSV header (=starvz_csv.c=, =phase1-workflow.sh=) has
+  no Priority column, so the later columns shift (Iteration <- Y = 0, the
+  real iteration lands in Subiteration). =tasks.rec= and the Paje trace have
+  the right values (-1, 1..100). Fix in =iotrace2_starvz.sh=: drop field 12
+  (Priority) from event 20 in the copy. Iterations now -1..100. Old StarVZ
+  outputs kept in =fxt/starvz-v1-shifted-columns/=. Probably also affects
+  the PCAD 13-10-2026 starvz.pdf (same StarPU 1.4.12); worth reporting to
+  StarVZ.
+  - =iotrace2_analyze.R= now takes the StarVZ yaml and draws its active
+    panels (Iteration, Application Workers, Submitted, Ready) with the I/O
+    panels in the same patchwork (aligned x). New figure:
+    =analysis-20261022-234152/timeline.png=; summary unchanged.
 
 * Resume for TCC
 
