@@ -4,11 +4,190 @@
 #+STARTUP: latexpreview
 #+TITLE: Notes on TCC work
 #+AUTHOR: Rayan Raddatz de Matos
-#+TODO: TODO DOING | DONE CANCELED
+#+TODO: TODO NEXT DOING BLOCKED | DONE CANCELED
 
 
 * Work
+** 2026 Week 43 [Oct]
+*** 22-10-2026: Measure mmap I/O outside StarPU time
+Goal: measure how much of the mmap I/O happens after the StarPU tasks end
+(kernel writeback), which the StarPU trace does not see. Idea: eBPF on the
+kernel block/writeback tracepoints.
+
+**** Check if eBPF can be used on PCAD                                :AI:
+Read-only probe on =cei2= (no =sudo=, to avoid admin mail): user/caps,
+=unprivileged_bpf_disabled=, =perf_event_paranoid=, BTF, kernel config,
+tracefs, tools, fallback files (=/proc/meminfo=, =/sys/block/*/stat=),
+=vm.dirty_*=, and a real =bpftrace= attempt via =nixw= (2 s count of
+=block_rq_issue=). Output is small, so it is printed directly (no =$SCRATCH=).
+
+#+begin_src slurm :host pcad :partition cei :nodelist cei2 :ntasks 1 :cpus 1 :mem 4G :time 00:20:00 :errors yes :job-name ebpf-check
+export PATH=$HOME/bin:$PATH
+s() { echo; echo "== $*"; }
+
+s host;            hostname; uname -r; id
+s groups-sudo;     getent group sudo wheel
+s caps;            grep -E '^Cap(Prm|Eff|Bnd)' /proc/self/status
+s unpriv_bpf;      cat /proc/sys/kernel/unprivileged_bpf_disabled
+s perf_paranoid;   cat /proc/sys/kernel/perf_event_paranoid
+s kptr_restrict;   cat /proc/sys/kernel/kptr_restrict
+s btf;             ls -l /sys/kernel/btf/vmlinux
+s kconfig;         grep -E 'CONFIG_(BPF_SYSCALL|BPF_EVENTS|BPF_JIT|DEBUG_INFO_BTF|FTRACE)=' /boot/config-$(uname -r)
+s tracefs;         ls -ld /sys/kernel/tracing /sys/kernel/debug/tracing 2>&1
+                   ls /sys/kernel/tracing/events/block 2>&1 | head
+s tools-system;    command -v bpftrace bpftool perf 2>&1
+s scratch-dev;     df -T "$SCRATCH"; lsblk -o NAME,MODEL,ROTA,LOG-SEC,PHY-SEC
+s fallback-read;   grep -E '^(MemTotal|Dirty|Writeback):' /proc/meminfo
+                   for d in /sys/block/sd*; do echo "$d: $(cat $d/stat)"; done
+s vm-dirty;        sysctl vm.dirty_ratio vm.dirty_background_ratio vm.dirty_expire_centisecs vm.dirty_writeback_centisecs
+
+s bpftrace-try
+nixw nix shell nixpkgs#bpftrace -c bpftrace -e \
+  'tracepoint:block:block_rq_issue { @n = count(); } interval:s:2 { exit(); }' 2>&1 | tail -20
+echo "exit=${PIPESTATUS[0]}"
+#+end_src
+
+#+RESULTS:
+: ob-slurm | job 832701 | pcad | submitted 2026-10-22 10:49 | ended 2026-10-22 10:51
+:
+: == host
+: cei2
+: 6.1.0-45-amd64
+: uid=2015(rrdmatos) gid=501(members) groups=501(members),502(tupi),504(draco),507(hype),509(blaise),517(cei),522(docker),530(poti)
+:
+: == groups-sudo
+: sudo:x:27:parque
+:
+: == caps
+: CapPrm:	0000000000000000
+: CapEff:	0000000000000000
+: CapBnd:	000001ffffffffff
+:
+: == unpriv_bpf
+: 2
+:
+: == perf_paranoid
+: -1
+:
+: == kptr_restrict
+: 0
+:
+: == btf
+: -r--r--r-- 1 root root 4349912 Oct 22 10:49 /sys/kernel/btf/vmlinux
+:
+: == kconfig
+: CONFIG_BPF_SYSCALL=y
+: CONFIG_BPF_JIT=y
+: CONFIG_DEBUG_INFO_BTF=y
+: CONFIG_FTRACE=y
+: CONFIG_BPF_EVENTS=y
+:
+: == tracefs
+: ls: cannot access '/sys/kernel/debug/tracing': Permission denied
+: drwx------ 6 root root 0 May  2 00:41 /sys/kernel/tracing
+: ls: cannot access '/sys/kernel/tracing/events/block': Permission denied
+:
+: == tools-system
+: /bin/perf
+:
+: == scratch-dev
+: Filesystem     Type 1K-blocks      Used Available Use% Mounted on
+: /dev/sda1      ext4 921816860 159346088 715569936  19% /
+: NAME   MODEL                ROTA LOG-SEC PHY-SEC
+: sda    INTEL SSDSC2KB960G8     0     512    4096
+: └─sda1                         0     512    4096
+: sdb    HGST HUH721212ALE600    1     512    4096
+: sdc    HGST HUH721212ALE600    1     512    4096
+:
+: == fallback-read
+: MemTotal:       97574000 kB
+: Dirty:              4972 kB
+: Writeback:             0 kB
+: /sys/block/sda:  2124567   365239 389157922  5862172 64790539 26766666 5536945480 230964894        0 10240580 237101809   216328        0 5018229592    80864  6627856   193877
+: /sys/block/sdb:      107        0     4288     1207        0        0        0        0        0     1172     1207        0        0        0        0        0        0
+: /sys/block/sdc:      100        0     4232     1158        0        0        0        0        0     1116     1158        0        0        0        0        0        0
+:
+: == vm-dirty
+: vm.dirty_ratio = 20
+: vm.dirty_background_ratio = 10
+: vm.dirty_expire_centisecs = 3000
+: vm.dirty_writeback_centisecs = 500
+:
+: == bpftrace-try
+: copying path '/nix/store/fgwmn1g1n1v3kw4nj7g6bl3n2g1wrpgr-audit-4.2.1-lib' from 'https://cache.nixos.org'...
+: copying path '/nix/store/avjr4vq1k2v3cxidf5aw6326yhrwsrxm-binutils-2.46-lib' from 'https://cache.nixos.org'...
+: copying path '/nix/store/xrzzvmqkmx68f6yj1hy16gjvc1r2bmr8-sqlite-3.53.3' from 'https://cache.nixos.org'...
+: copying path '/nix/store/f5r77q40xh7rj30dfkajv8y6jwbf4xh2-zstd-1.5.7' from 'https://cache.nixos.org'...
+: copying path '/nix/store/mr6cbi3rdy6w5y4cd6875gf4y0pqn0jf-llvm-21.1.8-lib' from 'https://cache.nixos.org'...
+: copying path '/nix/store/hsnfhb70n81h78il4fsglm2ylwvl1j84-audit-4.2.1-bin' from 'https://cache.nixos.org'...
+: copying path '/nix/store/qbvmi6qgfw0ipjvfndy9f6k69rnip42m-krb5-1.22.2-lib' from 'https://cache.nixos.org'...
+: copying path '/nix/store/2b7h6rnav6a0s6npjk8y76f6rjs86lvw-ngtcp2-1.23.0' from 'https://cache.nixos.org'...
+: copying path '/nix/store/hy7qsmyk9nbhcylcxbsf2aapsx8c6khb-libssh2-1.11.1' from 'https://cache.nixos.org'...
+: copying path '/nix/store/j9436i4mh2hlhnlqlk59fq5dc2sprs4i-readline-8.3p3' from 'https://cache.nixos.org'...
+: copying path '/nix/store/p9i1b7jgfj4fl5bx557jnwbdsafl434i-curl-8.22.0' from 'https://cache.nixos.org'...
+: copying path '/nix/store/kwyi4bq5s2qgwbhz6cs4gjy57c2zdxws-bash-interactive-5.3p20' from 'https://cache.nixos.org'...
+: copying path '/nix/store/xahxrjs30p3mw0a42bqg9ikgkikskw8m-python3-3.14.8' from 'https://cache.nixos.org'...
+: copying path '/nix/store/bvfkqam1y3zmsb3k41iml0zwx13sknjl-elfutils-0.195' from 'https://cache.nixos.org'...
+: copying path '/nix/store/g5r5v78yig5lf2srpcm1dwcnzs2g522v-libbpf-1.8.0' from 'https://cache.nixos.org'...
+: copying path '/nix/store/d0qnnzdamyh3p2nnibs7cssfadyvhs5s-python3.14-netaddr-1.3.0' from 'https://cache.nixos.org'...
+: copying path '/nix/store/j2y5azs1qi8zf3dkfnq97xg984cn6bzb-bcc-0.37.0' from 'https://cache.nixos.org'...
+: copying path '/nix/store/6vckl9z0k08nadkalhw777i9wwjki4cj-clang-21.1.8-lib' from 'https://cache.nixos.org'...
+: copying path '/nix/store/7g3x5lmnvyy0pqxvlyb4233y8ax13sk1-bpftrace-0.27.0' from 'https://cache.nixos.org'...
+: ERROR: Missing CAP_DAC_READ_SEARCH capability, please run bpftrace as the root user.
+: exit=1
+
+
+**** Why it doesn't work by itself right now
+
+
+Dei uma olhada aqui com o amigo para verificar se de fato não tinha
+como sem setuid e de fato o eBPF não funciona por falta de
+permissão. O kernel (Linux 6.1.0-45) suporta eBPF mas três coisas
+bloqueiam o uso do eBPF: O sysctl =kernel.unprivileged_bpf_disabled=
+está em 2, o que faz a syscall bpf() recusar a criação de mapas e o
+carregamento de programas para quem não tem =CAP_BPF= ou =CAP_SYS_ADMIN=
+(https://docs.kernel.org/admin-guide/sysctl/kernel.html#unprivileged-bpf-disabled
+e função __sys_bpf em
+https://github.com/gregkh/linux/blob/linux-6.1.y/kernel/bpf/syscall.c#L4981C12-L4981C21. O
+código do kernel 6.1 exige, para programas do tipo tracepoint, kprobe
+e perf_event, as capabilities CAP_BPF e CAP_PERFMON (ou
+CAP_SYS_ADMIN), e isso vale independentemente do sysctl
+(https://man7.org/linux/man-pages/man7/capabilities.7.html). Eu não
+tenho nenhuma capability (CapEff = 0) nem acesso ao sudo, e o tracefs
+(/sys/kernel/tracing) só é acessível pelo root. Mudar o sysctl para 0
+não resolveria, porque sem capabilities só são permitidos programas de
+filtro de socket (BPF_PROG_TYPE_SOCKET_FILTER e
+BPF_PROG_TYPE_CGROUP_SKB), que não servem para rastrear I/O
+(bpf_prog_load em
+https://github.com/gregkh/linux/blob/79807e970724c1f90cee1316361d61b80db4eef6/kernel/bpf/syscall.c#L2547-L2555;
+https://man7.org/linux/man-pages/man2/bpf.2.html).
+
+Para tornar isso possível, o processo que carrega o programa eBPF
+precisa ter CAP_BPF e CAP_PERFMON. Como tu disse, um script shell não
+serve, porque o Linux ignora o bit set-user-ID em scripts (seção
+Interpreter scripts em
+https://man7.org/linux/man-pages/man2/execve.2.html#VERSIONS). Por
+isso é preciso um executável binário, e só o root pode conceder as
+capabilities a esse arquivo (com setcap, que exige CAP_SETFCAP;
+https://man7.org/linux/man-pages/man8/setcap.8.html e
+https://man7.org/linux/man-pages/man7/capabilities.7.html) ou torná-lo
+setuid root. A segunda opção daria root completo ao processo, então a
+primeira é a mais restrita.
+
+Vou seguir com o que falamos de escrever um executável em C com libbpf
+e com o programa eBPF embutido no binário. Esse programa ficaria preso
+apenas aos tracepoints de I/O necessários (block e writeback),
+aceitaria só parâmetros simples e validados, como dispositivo e
+duração, e salvaria os eventos. Eu vou testar localmente no meu
+notebook Debian para checar que está pegando os dados necessários
+antes de ir para o PCAD. No PCAD teria que compilar e instalar o
+binário como root em um diretório do sistema, e aplicar setcap
+cap_bpf,cap_perfmon+ep
+(https://man7.org/linux/man-pages/man8/setcap.8.html) ao invés de dar
+setuid root para ter zero trust e menor privilégios.
+
 ** 2026 Week 41 [Oct]
+
 *** 14-10-2026: Check Metadata corruption
 
 [15:54:50; 14.10.2026]: Talking with Schnorr, I decided to check if it
@@ -832,222 +1011,501 @@ Consequences [H, to be measured]:
 
 * Backlog
 
-I/O direto no StarFletcher (criado em 15-10-2026, ex-SPECS.org).
+Direct I/O in StarFletcher (created 15-10-2026, ex-SPECS.org; migrated to
+the task template on 22-10-2026).
 
-Objetivo geral: medir quanto do custo de I/O o *StarPU* (e não o SO) consegue
-mascarar. O custo de disco precisa estar dentro da tarefa de escrita: =O_DIRECT=
-(sem page cache), opcionalmente =O_DSYNC= (espera persistir). Com =mmap= ou
-escrita bufferizada o mascaramento é feito pelo writeback do kernel.
+Overall goal: measure how much of the I/O cost *StarPU* (not the OS) can
+hide. The disk cost must be inside the write task: =O_DIRECT= (no page
+cache), optionally =O_DSYNC= (wait for persistence). With =mmap= or buffered
+writes the hiding is done by the kernel writeback.
 
-Versões a comparar:
-1. =mmap=: StarFletcher atual (Colle); escrita mascarada pelo kernel (page cache +
-   writeback).
-2. =direct=: =O_DIRECT= nas tarefas de escrita, escrita real.
-3. =direct_sync=: =O_DIRECT= + sync (sem nenhum buffering). Em aberto: =O_SYNC= ou
-   =O_DSYNC= (ver IMPL2).
-4. Fletcher sem tarefas (=github.com/pedrorigon/fletcher_petrobras=, ver BASE).
-Além dessas, =ENABLE_IO=0= (StarFletcher sem I/O) como =T0=.
+Versions to compare:
+1. =mmap=: current StarFletcher (Colle); writes hidden by the kernel (page
+   cache + writeback).
+2. =direct=: =O_DIRECT= in the write tasks, real write.
+3. =direct_sync=: =O_DIRECT= + sync (no buffering at all). Open: =O_SYNC= or
+   =O_DSYNC= (see IMPL2).
+4. Fletcher without tasks (=github.com/pedrorigon/fletcher_petrobras=, see
+   BASE).
+Plus =ENABLE_IO=0= (StarFletcher without I/O) as =T0=.
 
-Já verificado:
-- V1. Escrita paralela em offsets disjuntos, 1 nó, ext4 local (=cei2=, kernel 6.1):
-  sem corrupção de dados nem de tamanho (threads/processos, buffered 1000 B e
-  =O_DIRECT= 4096 B, ordens up/down, 10 repetições, overlap medido). Job 831253.
-- V2. =O_DIRECT= desalinhado (buffer, offset ou tamanho) -> =EINVAL= no =cei2=.
-- V3. Layout do =.rsf@=: passo-major, volume com x mais rápido (=io.c:107=,
-  =macros.h:60-63=); um cubo = =w^2= linhas de =w= floats não contíguas.
-- V4. =io_state_init= roda mesmo com =ENABLE_IO=0= (=main.c:398=).
-- V5. FP padrão é =float= (=floatingpoint.h:48-49=).
+Already verified:
+- V1. Parallel writes at disjoint offsets, 1 node, local ext4 (=cei2=, kernel
+  6.1): no data or size corruption (threads/processes, buffered 1000 B and
+  =O_DIRECT= 4096 B, up/down orders, 10 repetitions, overlap measured). Job
+  831253.
+- V2. Unaligned =O_DIRECT= (buffer, offset or size) -> =EINVAL= on =cei2=.
+- V3. =.rsf@= layout: step-major, volume with x fastest (=io.c:107=,
+  =macros.h:60-63=); one cube = =w^2= rows of =w= non-contiguous floats.
+- V4. =io_state_init= runs even with =ENABLE_IO=0= (=main.c:398=).
+- V5. Default FP is =float= (=floatingpoint.h:48-49=).
 
-Referências: =open(2)=, =statx(2)= (man7.org); =RRNotes.org= (05-10 e 14-10-2026);
-=pwrite-test/=.
+Hypotheses (referenced by =:ANSWERS:=):
+- H1 logical sector of =cei*= is 512 (T1)
+- H2 =STATX_DIOALIGN= on =$SCRATCH= gives mem/offset = 512 or 4096 (T1)
+- H3 ext4 serializes =O_DIRECT= that extends the file (T2)
+- H4 ext4 serializes =O_DIRECT= aligned to the sector but not to 4096 (T2)
+- H5 =O_DSYNC= on a preallocated file costs more (unwritten -> written) (T2)
+- H6 a slab (=C^2= cubes with the same =k=) is contiguous and aligned if
+  =4*W^2 % S == 0= (T3)
+- H7 StarPU accepts a task with =C^2= handles (T3)
+- H8 =starpu_malloc_set_align= applies to StarPU-allocated handles (T3)
+- H9 multi-node NFS: unaligned buffered can corrupt, aligned/=O_DIRECT= not (T4)
+- H10 =mmap MAP_SHARED= on multi-node NFS is not coherent (T4)
+- H11 with =mmap=, =write_block= measures only memcpy + page faults (T5)
+- H12 reported time excludes the writeback (=munmap/close= after, no
+  =msync=), even after process exit (T5, T6)
+- H13 hiding depends on write-task granularity (T5, PHASE2)
+- H15 =mmap= I/O cost only shows up when adding the post-exit writeback (T6)
+(H14 is a task, not a hypothesis.)
 
-** TODO T1: Setor lógico do disco e STATX_DIOALIGN
-Hipóteses: H1 setor lógico do =cei*= é 512; H2 =STATX_DIOALIGN= no =$SCRATCH= dá
-mem/offset = 512 ou 4096.
+Task conventions: template from the =define-task= skill; tags =impl=,
+=test= (microbenchmark/check), =exp= (experiment), =doc= + topic tags;
+dependencies via org-edna =:BLOCKER:=; board =C-c a b=.
 
-Passos:
-- Job no =cei2= (fixar =--nodelist=cei2=):
-  #+begin_example
-  cat /sys/block/sda/queue/logical_block_size /sys/block/sda/queue/physical_block_size
-  cat /sys/block/sda/queue/rotational
-  lsblk -o NAME,MODEL,LOG-SEC,PHY-SEC,ROTA
-  df -T $SCRATCH
-  #+end_example
-- Programa C pequeno em =pwrite-test/=: =statx(..., STATX_DIOALIGN)= em arquivo no
-  =$SCRATCH=, imprime =stx_dio_mem_align= e =stx_dio_offset_align=.
+References: =open(2)=, =statx(2)= (man7.org); =RRNotes.org= (05-10 and
+14-10-2026); =pwrite-test/=.
 
-Pronto quando: valor de =S= (alinhamento de offset) conhecido e registrado.
-Decide: se a fatia atual (=W=80=) serve (=4*W^2 % S == 0=: sim para 512, não para 4096).
+** TODO [#B] T1: Disk logical sector and STATX_DIOALIGN :test:direct:
+:PROPERTIES:
+:ID:       t1
+:CREATED:  [2026-10-15 Thu]
+:ENV:      pcad:cei (nodelist cei2)
+:ANSWERS:  H1 H2
+:END:
+*** Description
+Find the offset alignment =S= required by =O_DIRECT= on =$SCRATCH= of
+=cei2=. It decides whether the current slab (=W=80=) works:
+=4*W^2 % S == 0= holds for 512, not for 4096.
+*** Scope
+- In: block device sector sizes; small C program in =pwrite-test/= calling
+  =statx(..., STATX_DIOALIGN)= on a file in =$SCRATCH=, printing
+  =stx_dio_mem_align= and =stx_dio_offset_align=.
+- Out: other nodes.
+*** Related files
+- [[file:pwrite-test/]]
+*** Acceptance criteria [1/2]
+- [X] Logical/physical sector of the =$SCRATCH= device recorded.
+- [ ] =stx_dio_mem_align= and =stx_dio_offset_align= (=S=) recorded.
+*** Verification
+Job on =cei2= (=--nodelist=cei2=):
+#+begin_example
+cat /sys/block/sda/queue/logical_block_size /sys/block/sda/queue/physical_block_size
+cat /sys/block/sda/queue/rotational
+lsblk -o NAME,MODEL,LOG-SEC,PHY-SEC,ROTA
+df -T $SCRATCH
+#+end_example
+plus the =statx= program.
+*** Open questions
+*** Log
+- 22-10-2026, job 832701 (eBPF check): =sda= (INTEL SSDSC2KB960G8) LOG-SEC
+  512, PHY-SEC 4096, ROTA 0; =$SCRATCH= on =/dev/sda1= ext4. H1 confirmed
+  for =cei2=. =STATX_DIOALIGN= still open.
 
-** TODO T2: Microbenchmarks O_DIRECT (prealoc, DSYNC, bloco, workers)
-Hipóteses: H3 ext4 serializa =O_DIRECT= que estende o arquivo (overlap baixo em
-=direct_*= up); H4 ext4 serializa =O_DIRECT= alinhado ao setor mas não a 4096;
-H5 =O_DSYNC= em arquivo pré-alocado custa mais (conversão unwritten -> written).
-
-Passos:
-- Ampliar =direct_threads.c= / =direct_procs.c= com:
-  - =-p=: pré-aloca com =posix_fallocate= (como o StarFletcher)
-  - =-s=: abre com =O_DSYNC=
-  - =BLOCK= = 512, 4096, tamanho de fatia (=4*W^2*w=, ex. 128000 para W=80, w=20)
+** TODO [#B] T2: O_DIRECT microbenchmarks (prealloc, DSYNC, block, workers) :test:direct:
+:PROPERTIES:
+:ID:       t2
+:CREATED:  [2026-10-15 Thu]
+:ENV:      pcad:cei (nodelist cei2)
+:BLOCKER:  ids(t1)
+:ANSWERS:  H3 H4 H5
+:END:
+*** Description
+Check how ext4 behaves with parallel =O_DIRECT= writes under the conditions
+StarFletcher will use (preallocated file, =O_DSYNC=, slab-sized blocks).
+*** Scope
+- In: extend =direct_threads.c= / =direct_procs.c= with:
+  - =-p=: preallocate with =posix_fallocate= (like StarFletcher)
+  - =-s=: open with =O_DSYNC=
+  - =BLOCK= = 512, 4096, slab size (=4*W^2*w=, e.g. 128000 for W=80, w=20)
   - =NWORKERS= = 1, 2, 4, 8, 16
-- Medir tempo total, MB/s, overlap; 10 repetições; reportar média, desvio e n.
-- Manter verificação de corretude.
+  Measure total time, MB/s, overlap; keep the correctness check.
+- Out: NFS (T4).
+*** Related files
+- [[file:pwrite-test/direct_threads.c]]
+- [[file:pwrite-test/direct_procs.c]]
+*** Acceptance criteria [0/2]
+- [ ] 10 repetitions per configuration; mean, std dev and n reported.
+- [ ] H3, H4, H5 confirmed or refuted with numbers.
+*** Verification
+Correctness check of the existing tests (=OK= / =CORRUPTED=) on every run.
+*** Open questions
+*** Log
 
-Pronto quando: H3, H4, H5 confirmadas ou refutadas com números.
-Depende de: T1.
+** TODO [#B] T3: StarPU microbenchmark with write_slab :test:starpu:direct:
+:PROPERTIES:
+:ID:       t3
+:CREATED:  [2026-10-15 Thu]
+:ENV:      pcad:cei
+:BLOCKER:  ids(t1)
+:ANSWERS:  H6 H7 H8
+:END:
+*** Description
+Validate the slab write design of IMPL2 in a small StarPU program before
+touching StarFletcher.
+*** Scope
+- In: small program: =C^3= =starpu_block= handles with known values; one
+  =write_slab= task per =k= with the =C^2= handles in =STARPU_R=; build the
+  slab in an aligned buffer (=posix_memalign=) in the volume layout; one
+  =pwrite= with =O_DIRECT=. Read the StarPU 1.4 docs on =STARPU_NMAXBUFS=,
+  =dyn_handles=, =starpu_malloc_set_align=.
+- Out: StarFletcher changes (IMPL2).
+*** Related files
+*** Acceptance criteria [0/2]
+- [ ] Output file correct (same check scheme as the current tests).
+- [ ] H6, H7, H8 answered.
+*** Verification
+*** Open questions
+*** Log
 
-** TODO T3: Microbenchmark StarPU com write_slab
-Hipóteses: H6 fatia (=C^2= cubos com mesmo =k=) é trecho contíguo e alinhado se
-=4*W^2 % S == 0=; H7 StarPU aceita tarefa com =C^2= handles (=dyn_handles= /
-=STARPU_NMAXBUFS=); H8 =starpu_malloc_set_align= vale para handles alocados pelo
-StarPU (=home_node = -1=).
+** TODO [#A] IMPL1: Guard io_state_init/finish with ENABLE_IO :impl:starfletcher:
+:PROPERTIES:
+:ID:       impl1
+:CREATED:  [2026-10-15 Thu]
+:ENV:      local:any
+:END:
+*** Description
+V4: the no-I/O baseline (=ENABLE_IO=0=) still creates the file and runs
+=fallocate=, so =T0= is not a clean baseline.
+*** Scope
+- In: branch =io-direct= of =star-fletcher=; wrap =io_state_init=
+  (=main.c:398=) and =io_state_finish= (=main.c:828=) in =if (enable_io)=;
+  move =io_state_finish()= out of the =assert= (=main.c:828=).
+- Out: anything else in the I/O path.
+*** Related files
+- [[file:star-fletcher/src/main.c]]
+*** Acceptance criteria [0/2]
+- [ ] =ENABLE_IO=0= does not create the output file.
+- [ ] Builds and runs (with =ENABLE_IO=1= the output is unchanged).
+*** Verification
+*** Open questions
+*** Log
 
-Passos:
-- Programa pequeno: =C^3= handles =starpu_block= com valores conhecidos; uma tarefa
-  =write_slab= por =k= com os =C^2= handles em =STARPU_R=; monta a fatia em buffer
-  alinhado (=posix_memalign=) no layout do volume; um =pwrite= com =O_DIRECT=.
-- Verificar o arquivo no fim (mesmo esquema dos testes atuais).
-- Ler doc do StarPU 1.4 sobre =STARPU_NMAXBUFS=, =dyn_handles=,
-  =starpu_malloc_set_align=.
+** TODO [#B] IMPL2: IO_MODE and per-slab O_DIRECT writes :impl:starfletcher:direct:
+:PROPERTIES:
+:ID:       impl2
+:CREATED:  [2026-10-15 Thu]
+:ENV:      local:any
+:BLOCKER:  ids(t1 t3 impl1)
+:END:
+*** Description
+Add the =direct= and =direct_sync= modes to StarFletcher, writing one slab
+per task with =O_DIRECT=, keeping =mmap= as default.
+*** Scope
+- In:
+  - Env var =IO_MODE= = =mmap= (default, current) | =direct= |
+    =direct_sync=, read with =ENABLE_IO= (=main.c:343-352=).
+  - =io.c=, direct mode:
+    - =open(O_WRONLY|O_CREAT|O_TRUNC|O_DIRECT[|O_DSYNC])=
+    - check alignment with =statx STATX_DIOALIGN= (commented code at
+      =io.c:177-190=); clear error if =4*W^2 % offset_align != 0=
+    - =posix_fallocate= of the total size (as today)
+    - =io_state_write_slab(k, t, blocks[], w, W)=: aligned buffer per worker
+      (=_Thread_local=, =posix_memalign=, =4*W^2*w= bytes); copy each cube
+      =(i,j)= to =buf[(i*w+x) + W*((j*w+y) + z*W)]=; one =pwrite= at
+      =offset = 4*(t*W^3 + k*w*W^2)=
+    - =io_state_finish=: only =close= in direct mode
+  - =main.c=, =write_wave= (=main.c:246-277=): in direct mode, =C=
+    =write_slab= tasks (one per =k=), each with the =C^2= handles in
+    =STARPU_R=. =mmap= mode keeps one task per cube.
+  - File layout unchanged (Madagascar still reads it).
+  - If =S= = 4096 and W not a multiple of 32: choose a compatible W, or
+    padding at the end + =ftruncate=, or an edge task for the sector shared
+    between slabs.
+- Out: per-cube and per-step granularity (PHASE2).
+*** Related files
+- [[file:star-fletcher/src/io.c]]
+- [[file:star-fletcher/src/main.c]]
+*** Acceptance criteria [0/1]
+- [ ] The three modes run with the same arguments.
+*** Verification
+*** Open questions
+- =direct_sync= with =O_SYNC= (requested) or =O_DSYNC=? =O_SYNC= also waits
+  for metadata (mtime etc.); with a preallocated file =O_DSYNC= already
+  persists the unwritten -> written conversion, so the difference should be
+  small [hypothesis, not measured]. Option: a fourth mode =direct_osync= and
+  measure both in T2.
+*** Log
 
-Pronto quando: arquivo correto e H6-H8 respondidas.
-Depende de: T1.
+** TODO [#B] IMPL3: Validate direct output against mmap :test:starfletcher:direct:
+:PROPERTIES:
+:ID:       impl3
+:CREATED:  [2026-10-15 Thu]
+:ENV:      pcad:cei (nodelist cei2)
+:BLOCKER:  ids(impl2)
+:END:
+*** Description
+Make sure the new modes produce exactly the same file as =mmap=.
+*** Scope
+- In: same arguments with =IO_MODE=mmap= and =IO_MODE=direct=, then
+  =direct_sync=.
+- Out: performance.
+*** Related files
+- [[file:star-fletcher/src/io.c]]
+*** Acceptance criteria [0/2]
+- [ ] =direct= and =mmap= =.rsf@= identical byte by byte.
+- [ ] =direct_sync= and =mmap= =.rsf@= identical byte by byte.
+*** Verification
+=cmp= of the two =.rsf@= files.
+*** Open questions
+*** Log
 
-** TODO IMPL1: Guardar io_state_init/finish com ENABLE_IO
-Problema: V4 (baseline sem I/O ainda cria e faz =fallocate= do arquivo).
+** TODO [#A] T5: Measure I/O hiding in StarFletcher :exp:starpu:io:
+:PROPERTIES:
+:ID:       t5
+:CREATED:  [2026-10-15 Thu]
+:ENV:      pcad:cei (nodelist cei2)
+:BLOCKER:  ids(impl3 t6 base)
+:ANSWERS:  H11 H12 H13
+:END:
+*** Description
+Main experiment: how much of the write cost each mode hides, and where the
+hidden fraction drops (the I/O Wall).
+*** Scope
+- In:
+  - =cei2= fixed, same arguments, FxT trace + StarVZ.
+  - =T0= (=ENABLE_IO=0=), =T_mmap=, =T_direct=, =T_direct_sync=.
+  - =S= = sum of the write task durations (trace).
+  - Hidden fraction ~ =1 - (T_mode - T0) / S=.
+  - Vary =dt_output= and =nx= to find where the fraction drops.
+  - =mmap= also with =fsync= at the end (H12).
+  - Compare with Fletcher without tasks (BASE), same =nx= / steps / output.
+  - For =mmap=: time to the real process end and post-exit writeback (T6).
+- Out: multi-node (T4), granularity (PHASE2).
+*** Related files
+- [[file:star-fletcher/src/main.c]]
+- [[file:star-fletcher/src/io.c]]
+*** Acceptance criteria [0/2]
+- [ ] 10 repetitions per configuration; n, mean, std dev reported.
+- [ ] Curve of hidden fraction x output volume for each mode.
+*** Verification
+*** Open questions
+*** Log
 
-Passos:
-- Branch nova no =star-fletcher= (ex. =io-direct=).
-- Envolver =io_state_init= (=main.c:398=) e =io_state_finish= (=main.c:828=) em
-  =if (enable_io)=. Tirar =io_state_finish()= de dentro do =assert= (=main.c:828=).
+** TODO [#A] T6: Real program end and post-exit writeback (mmap) :exp:mmap:io:
+:PROPERTIES:
+:ID:       t6
+:CREATED:  [2026-10-15 Thu]
+:ENV:      pcad:cei (nodelist cei2)
+:BLOCKER:  ids(impl1)
+:ANSWERS:  H12 H15
+:END:
+*** Description
+With =mmap=, measure the StarPU time, the time to process exit and the time
+until the disk is idle, to see how much I/O happens outside the measured
+time.
+*** Scope
+- In:
+  - Timestamps on the same clock (=CLOCK_MONOTONIC=, or =date +%s.%N= in the
+    job): start, StarPU end (=starpu_task_wait_for_all=), after
+    =munmap=/=close=, process exit.
+  - Unprivileged sampler (~10 ms), from job start until the disk is idle:
+    - =/sys/block/<dev>/stat= (sectors written, I/O in flight)
+    - =Dirty= and =Writeback= from =/proc/meminfo=
+    - =write_bytes= from =/proc/<pid>/io= before the process exits
+    - stop when =Dirty=/=Writeback= are back to baseline (or after =sync=)
+  - eBPF: =block:block_rq_issue=, =block:block_rq_complete=, =writeback:*=
+    to place the writes in time (see IOTRACE1, IOTRACE2).
+  - Compare with =mmap= + =fsync= at the end (T5).
+  - Record =vm.dirty_*= (=sysctl vm=) and free RAM of the node on each run.
+- Out: =direct= modes.
+*** Related files
+- [[file:star-fletcher/src/main.c]]
+- [[file:star-fletcher/src/io.c]]
+*** Acceptance criteria [0/2]
+- [ ] For =mmap=: StarPU time, time to process exit and time until the disk
+      is idle measured.
+- [ ] H12 and H15 answered.
+*** Verification
+*** Open questions
+- eBPF on PCAD needs CAP_BPF + CAP_PERFMON (job 832701:
+  =unprivileged_bpf_disabled=2=, =CapEff=0=, tracefs root-only). Plan: fixed
+  binary with =setcap= installed by the admin (IOTRACE1). Until then, the
+  unprivileged sampler is the fallback.
+- =cei2= writeback settings (job 832701): =dirty_ratio=20=,
+  =dirty_background_ratio=10=, =dirty_expire_centisecs=3000=,
+  =dirty_writeback_centisecs=500=, MemTotal ~93 GiB.
+*** Log
 
-Pronto quando: =ENABLE_IO=0= não cria o arquivo; build e execução OK.
+** TODO [#B] BASE: Fletcher without tasks (fletcher_petrobras) :exp:baseline:
+:PROPERTIES:
+:ID:       base
+:CREATED:  [2026-10-15 Thu]
+:ENV:      pcad:cei (nodelist cei2)
+:END:
+*** Description
+Baseline without a task runtime, to compare with StarFletcher in T5.
+Repository: =https://github.com/pedrorigon/fletcher_petrobras= (many
+variants: =original=, =original_openMP_target=, =original_mgpu_*=, ...).
+*** Scope
+- In:
+  - Choose the variant and record the commit used.
+  - Check how it writes the =.rsf= output (=fwrite=? per step?) and whether
+    it uses the same parameters (=nx=, =dt=, steps, output interval) as
+    StarFletcher.
+  - Build on PCAD (Nix or not) and run with the T5 arguments.
+  - Check the output is comparable (=cmp= or numeric difference).
+- Out: GPU variants unless chosen.
+*** Related files
+*** Acceptance criteria [0/2]
+- [ ] Variant chosen, build and run OK on =cei2=.
+- [ ] Times with and without output measured.
+*** Verification
+*** Open questions
+- Which variant? CPU/OpenMP to compare with =.#no-cuda=?
+*** Log
 
-** TODO IMPL2: IO_MODE e escrita O_DIRECT por fatia
-Passos:
-- Variável de ambiente =IO_MODE= = =mmap= (padrão, atual) | =direct= |
-  =direct_sync=, lida junto com =ENABLE_IO= (=main.c:343-352=).
-- =io.c=, modo direct:
-  - =open(O_WRONLY|O_CREAT|O_TRUNC|O_DIRECT[|O_DSYNC])=
-  - checar alinhamento com =statx STATX_DIOALIGN= (código comentado em
-    =io.c:177-190=); erro claro se =4*W^2 % offset_align != 0=
-  - =posix_fallocate= do tamanho total (como hoje)
-  - =io_state_write_slab(k, t, blocks[], w, W)=: buffer alinhado por worker
-    (=_Thread_local=, =posix_memalign=, =4*W^2*w= bytes); copia cada cubo =(i,j)=
-    para =buf[(i*w+x) + W*((j*w+y) + z*W)]=; um =pwrite= em
-    =offset = 4*(t*W^3 + k*w*W^2)=
-  - =io_state_finish=: só =close= no modo direct
-- =main.c=, =write_wave= (=main.c:246-277=): no modo direct, =C= tarefas
-  =write_slab= (uma por =k=), cada uma com os =C^2= handles em =STARPU_R=.
-  Modo =mmap= continua uma tarefa por cubo.
-- Layout do arquivo não muda (Madagascar continua lendo).
-- Se =S= = 4096 e W não múltiplo de 32: escolher W compatível, ou padding no fim +
-  =ftruncate=, ou tarefa de borda para o setor compartilhado entre fatias.
+** TODO [#C] T4: Multi-node parallel writes on NFS :test:nfs:
+:PROPERTIES:
+:ID:       t4
+:CREATED:  [2026-10-15 Thu]
+:ENV:      pcad:cei (2-4 nodes)
+:ANSWERS:  H9 H10
+:END:
+*** Description
+Check parallel writes to one file from several nodes over NFS. Low
+priority: only relevant for StarPU-MPI.
+*** Scope
+- In: =srun= with 2-4 nodes, 1 process per node, =SLURM_PROCID= as id; file
+  in =$HOME= (NFS) on purpose (exception to the CLAUDE.md rule); cases:
+  buffered 1000 B, buffered 4096 B, =O_DIRECT=, =mmap=.
+- Out: single node (V1).
+*** Related files
+- [[file:pwrite-test/]]
+*** Acceptance criteria [0/1]
+- [ ] H9 and H10 answered.
+*** Verification
+Check in a separate step, after all processes have closed the file.
+*** Open questions
+*** Log
 
-- Em aberto: =direct_sync= com =O_SYNC= (pedido) ou =O_DSYNC= (texto acima).
-  =O_SYNC= também espera metadados (mtime etc.); com arquivo pré-alocado o
-  =O_DSYNC= já grava a conversão unwritten -> written, então a diferença deve ser
-  pequena [H, não medido]. Opção: um quarto modo =direct_osync= e medir os dois
-  em T2.
+** TODO [#C] PHASE2: Per-cube and per-step granularity :exp:starpu:io:
+:PROPERTIES:
+:ID:       phase2
+:CREATED:  [2026-10-15 Thu]
+:ENV:      pcad:cei (nodelist cei2)
+:BLOCKER:  ids(t5)
+:ANSWERS:  H13
+:END:
+*** Description
+(Was FASE2.) Repeat T5 with three write-task granularities: cube, slab,
+step.
+*** Scope
+- In:
+  - Per cube: per-cube layout with padding (=slot = roundup(w^3*4, S)=), one
+    write per =write_block=, converter to the volume layout.
+  - Per step: one task with all =C^3= handles.
+  - Repeat T5 with cube / slab / step.
+- Out:
+*** Related files
+- [[file:star-fletcher/src/io.c]]
+- [[file:star-fletcher/src/main.c]]
+*** Acceptance criteria [0/1]
+- [ ] Hiding compared across the three granularities.
+*** Verification
+*** Open questions
+*** Log
 
-Pronto quando: os três modos rodam com os mesmos argumentos.
-Depende de: T1, T3, IMPL1.
+** TODO [#C] H14: Meaning of seg= in the .rsf header :doc:rsf:
+:PROPERTIES:
+:ID:       h14
+:CREATED:  [2026-10-15 Thu]
+:ENV:      local:any
+:END:
+*** Description
+Understand the =seg== field written in the =.rsf= header.
+*** Scope
+- In: read =main.c:810-820= and the Madagascar docs on =.rsf=.
+- Out:
+*** Related files
+- [[file:star-fletcher/src/main.c]]
+*** Acceptance criteria [0/2]
+- [ ] Meaning recorded.
+- [ ] Stated whether the PHASE2 converter needs it.
+*** Verification
+*** Open questions
+*** Log
 
-** TODO IMPL3: Validar saída direct contra mmap
-Passos:
-- Mesmos argumentos em =IO_MODE=mmap= e =IO_MODE=direct=; =cmp= dos dois =.rsf@=.
-- Repetir com =direct_sync=.
+** NEXT [#A] IOTRACE1: Build and validate the eBPF block-I/O tracer :impl:ebpf:io:
+:PROPERTIES:
+:ID:       iotrace1
+:CREATED:  [2026-10-22 Thu]
+:ENV:      local:linux-root (Debian notebook, kernel >= 5.8, BTF)
+:END:
+*** Description
+On PCAD, eBPF needs CAP_BPF + CAP_PERFMON (unprivileged_bpf_disabled=2,
+CapEff=0, job 832701). Plan: a small fixed C tool (libbpf, BPF program
+embedded) that the admin can install with setcap. This task builds it and
+validates it standalone on the notebook.
+*** Scope
+- In: tp_btf on block_rq_issue, block_rq_complete, writeback_single_inode;
+  filter by device (-d MAJ:MIN), optional duration (-t); CSV to stdout
+  (ts_ns,event,dev,sector,bytes,pid,comm,inode); ts from bpf_ktime_get_ns
+  (CLOCK_MONOTONIC); small mmap test program.
+- Out: dirty-page counting, syscall tracing, StarPU/StarFletcher, PCAD install.
+*** Related files
+- [[file:iotrace/iotrace.bpf.c]] (new)
+- [[file:iotrace/iotrace.c]] (new)
+- [[file:iotrace/Makefile]] (new)
+- [[file:iotrace/test/mmap_write.c]] (new)
+*** Acceptance criteria [0/4]
+- [ ] Builds on the notebook with the Makefile (no errors/warnings).
+- [ ] dd oflag=direct of N MB: sum of bytes of block_rq_complete with
+      comm=dd == N MB exactly.
+- [ ] mmap_write of N MB, exits without msync: writes on the device appear
+      after process exit, comm=kworker*, total within 5% of N MB.
+- [ ] Runs as a normal user with setcap cap_bpf,cap_perfmon+ep (no sudo, no
+      tracefs access).
+*** Verification
+(exact commands written while implementing; one per criterion)
+*** Open questions
+- Notebook kernel version and /sys/kernel/btf/vmlinux present?
+- Exact tracepoint args of writeback_single_inode on 6.1 vs notebook kernel.
+- Does tp_btf attach work with setcap only (no tracefs)? Criterion 4 tests it.
+*** Log
 
-Pronto quando: arquivos idênticos byte a byte.
-Depende de: IMPL2.
-
-** TODO T5: Medir mascaramento no StarFletcher
-Hipóteses: H11 com =mmap=, =write_block= mede só memcpy + page faults; H12 o tempo
-reportado não inclui o writeback (=munmap/close= depois, sem =msync=); H13
-agregação por fatia atrasa o I/O e reduz o mascaramento vs por cubo.
-
-Passos:
-- =cei2= fixo, mesmos argumentos, trace FxT + StarVZ.
-- =T0= (=ENABLE_IO=0=), =T_mmap=, =T_direct=, =T_direct_sync=.
-- =S= = soma das durações das tarefas de escrita (trace).
-- Fração mascarada ~ =1 - (T_modo - T0) / S=.
-- Variar =dt_output= e =nx= para achar onde a fração cai (I/O Wall).
-- =mmap= também com =fsync= no fim (H12).
-- 10 repetições por configuração; reportar n, média, desvio.
-- Comparar também com o Fletcher sem tarefas (BASE), mesmos =nx= / passos / saída.
-- Para =mmap=: tempo até o fim real do processo e writeback pós-fim (T6).
-
-Pronto quando: curva fração mascarada x volume de saída para cada modo.
-Depende de: IMPL3, T6 (para =mmap=), BASE.
-
-** TODO T6: Fim real do programa e writeback pós-fim (mmap)
-Hipótese: H12 (o writeback do =mmap= acontece fora do tempo medido, inclusive
-depois do processo sair); H15 o custo de I/O do =mmap= só aparece somando o
-writeback pós-fim.
-
-Passos:
-- Timestamps no mesmo relógio (=CLOCK_MONOTONIC=, ou =date +%s.%N= no job):
-  início, fim do StarPU (=starpu_task_wait_for_all=), depois de =munmap=/=close=,
-  saída do processo.
-- Sampler sem root (~10 ms), do início do job até o disco ficar ocioso:
-  - =/sys/block/<dev>/stat= (setores escritos, I/O em andamento)
-  - =Dirty= e =Writeback= de =/proc/meminfo=
-  - =write_bytes= de =/proc/<pid>/io= antes do processo sair
-  - parar quando =Dirty=/=Writeback= voltarem à linha de base (ou após =sync=)
-- eBPF (se houver root / =CAP_BPF= no PCAD): tracepoints =block:block_rq_issue=,
-  =block:block_rq_complete=, =writeback:*= para atribuir as escritas no tempo.
-  Verificar permissão antes (perguntar ao admin).
-- Comparar com =mmap= + =fsync= no fim (T5).
-- Registrar =vm.dirty_*= (=sysctl vm=) e RAM livre do nó em cada execução.
-
-Pronto quando: para =mmap=, tempo de StarPU, tempo até o fim do processo e tempo
-até o disco esvaziar medidos; H12 e H15 respondidas.
-Depende de: IMPL1.
-
-** TODO BASE: Fletcher sem tarefas (fletcher_petrobras)
-Repositório: =https://github.com/pedrorigon/fletcher_petrobras= (muitas
-variantes: =original=, =original_openMP_target=, =original_mgpu_*=, ...).
-
-Passos:
-- Escolher a variante (em aberto: qual; CPU/OpenMP para comparar com
-  =.#no-cuda=?) e registrar o commit usado.
-- Ver como ele escreve a saída =.rsf= (=fwrite=? por passo?) e se usa os mesmos
-  parâmetros (=nx=, =dt=, passos, intervalo de saída) do StarFletcher.
-- Build no PCAD (Nix ou não) e rodar com os mesmos argumentos da T5.
-- Conferir se a saída é comparável (=cmp= ou diferença numérica).
-
-Pronto quando: variante escolhida, build e execução OK no =cei2=, tempos com e
-sem saída.
-
-** TODO T4: Escrita paralela multi-nó em NFS
-Hipóteses: H9 em NFS multi-nó, buffered desalinhado pode corromper, alinhado /
-=O_DIRECT= não; H10 =mmap MAP_SHARED= em NFS multi-nó não é coerente.
-
-Passos:
-- =srun= com 2-4 nós, 1 processo por nó, =SLURM_PROCID= como id.
-- Arquivo no =$HOME= (NFS) de propósito (exceção à regra do CLAUDE.md).
-- Casos: buffered 1000 B, buffered 4096 B, =O_DIRECT=, =mmap=.
-- Verificação em passo separado, depois de todos fecharem.
-
-Pronto quando: H9 e H10 respondidas.
-Prioridade: baixa (relevante só para StarPU-MPI).
-
-** TODO FASE2: Granularidade por cubo e por passo
-Hipótese: H13 (mascaramento depende da granularidade da tarefa de escrita).
-
-Passos:
-- Por cubo: layout por cubo com padding (=slot = roundup(w^3*4, S)=), uma escrita
-  por =write_block=, conversor para o layout do volume.
-- Por passo: uma tarefa com todos os =C^3= handles.
-- Repetir T5 com cubo / fatia / passo.
-
-Pronto quando: comparação de mascaramento entre as três granularidades.
-Depende de: T5.
-
-** TODO H14: Significado de seg= no header .rsf
-Passos: ler =main.c:810-820= e a doc do Madagascar sobre =.rsf=.
-Pronto quando: significado registrado; dizer se o conversor da FASE2 precisa dele.
-
+** TODO [#A] IOTRACE2: Trace mmap I/O of StarFletcher with eBPF + FxT on the notebook :exp:ebpf:io:starpu:
+:PROPERTIES:
+:ID:       iotrace2
+:CREATED:  [2026-10-22 Thu]
+:ENV:      local:linux-root (Debian notebook, STARPU_NCPU=4)
+:BLOCKER:  ids(iotrace1)
+:ANSWERS:  H12 H15
+:END:
+*** Description
+Full small-scale run of StarFletcher (mmap I/O) with the FxT trace and
+iotrace running at the same time, to measure how much of the disk I/O
+happens after the StarPU tasks end and after the process exits. Uses
+CLOCK_MONOTONIC anchors in the app to align eBPF events with the FxT trace.
+*** Scope
+- In: anchors in StarFletcher (CLOCK_MONOTONIC printed + FxT user event at:
+  start, after starpu_task_wait_for_all, after munmap/close, exit); one run
+  with the 13-10-2026 args:
+  =TTI 56 56 56 8 12.5 12.5 12.5 0.0001 0.01 4 0.0001=
+  (volume 80^3 floats = 2,048,000 B/frame, 101 frames, ~207 MB .rsf@);
+  bytes split into before StarPU end / StarPU end -> exit / after exit;
+  one timeline figure (StarVZ + I/O).
+- Out: PCAD runs, direct/direct_sync modes, repetitions and statistics
+  (that is T5/T6).
+*** Related files
+- [[file:star-fletcher/src/main.c]]
+- [[file:star-fletcher/src/io.c]]
+- [[file:iotrace/iotrace.c]]
+*** Acceptance criteria [0/4]
+- [ ] StarFletcher runs on the notebook with STARPU_NCPU=4, FxT on, iotrace
+      on the same device, in the same run.
+- [ ] The 4 anchors appear in stdout and as user events in the FxT trace.
+- [ ] Total bytes written to the device (app + kworker*) within 5% of the
+      .rsf@ file size.
+- [ ] Bytes reported in the 3 intervals, and one figure with the StarVZ
+      timeline and the I/O events on the same time axis.
+*** Verification
+(exact commands written while implementing)
+*** Open questions
+- Does the notebook build StarFletcher with Nix (.#no-cuda)?
+- Does starpu_fxt_trace_user_event exist in StarPU 1.4.12?
+- Relation to T6 and IMPL1 (anchors overlap with T6 timestamps).
+*** Log
 
 * Resume for TCC
 
