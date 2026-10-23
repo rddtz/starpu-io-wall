@@ -1508,7 +1508,7 @@ output does not hit the traced disk. Script: iotrace_tests.sh (run as root).
     no =/dev/shm= there because StarFletcher needs the RAM.
   - Note: =make= rebuilding =iotrace= drops the file capabilities.
 
-** TODO [#A] IOTRACE2: Trace mmap I/O of StarFletcher with eBPF + FxT on the notebook :exp:ebpf:io:starpu:
+** DONE [#A] IOTRACE2: Trace mmap I/O of StarFletcher with eBPF + FxT on the notebook :exp:ebpf:io:starpu:
 :PROPERTIES:
 :ID:       iotrace2
 :CREATED:  [2026-10-22 Thu]
@@ -1535,23 +1535,74 @@ CLOCK_MONOTONIC anchors in the app to align eBPF events with the FxT trace.
 - [[file:star-fletcher/src/main.c]]
 - [[file:star-fletcher/src/io.c]]
 - [[file:iotrace/iotrace.c]]
-*** Acceptance criteria [0/4]
-- [ ] StarFletcher runs on the notebook with STARPU_NCPU=4, FxT on, iotrace
+*** Acceptance criteria [4/4]
+- [X] StarFletcher runs on the notebook with STARPU_NCPU=4, FxT on, iotrace
       on the same device, in the same run.
-- [ ] The 4 anchors appear in stdout; anchors 1-2 (start, tasks_done) also
+- [X] The 4 anchors appear in stdout; anchors 1-2 (start, tasks_done) also
       as user events in the FxT trace (3-4 come after starpu_shutdown, when
       FxT is closed; moving io_state_finish before it is IMPL1 scope).
-- [ ] Total bytes written to the device (app + kworker*) within 5% of the
+- [X] Total bytes written to the device (app + kworker*) within 5% of the
       .rsf@ file size.
-- [ ] Bytes reported in the 3 intervals, and one figure with the StarVZ
+- [X] Bytes reported in the 3 intervals, and one figure with the StarVZ
       timeline and the I/O events on the same time axis.
 *** Verification
 (exact commands written while implementing)
+Scripts in =iotrace/exp/= (tcc branch =iotrace2=); StarFletcher branch
+=iotrace2= (=abd76c4= flake package =star-fletcher-trace=, =fc8dbbd= anchors).
+#+begin_src sh
+cd star-fletcher && nix build .#star-fletcher-trace -o ~/sf-runs/result-trace
+nix build github:schnorr/starvz \
+  --override-input starpu github:Sacolle/nix-starpu/3e05ad299208df0c40f6d2bac7a207c5be0e0fa4
+cd .. && iotrace/exp/iotrace2_run.sh ~/sf-runs/result-trace/bin/star-fletcher
+iotrace/exp/iotrace2_starvz.sh <starvz-tools> data/local/iotrace2/<run>
+<starvz R>/bin/Rscript iotrace/exp/iotrace2_analyze.R data/local/iotrace2/<run> \
+  data/local/iotrace2/<run>/analysis-<date>
+#+end_src
+- =iotrace2_run.sh=: iotrace (setcap, no sudo) on 259:0, StarFletcher with
+  STARPU_NCPU=4 + FxT, 60 s of tracing after exit; io.csv and FxT on
+  =/dev/shm= during the run, =.rsf@= on disk (=~/sf-runs/<run>/=).
+- =iotrace2_starvz.sh=: StarVZ phase 1+2 with the user event workaround.
+- =iotrace2_analyze.R=: clock alignment, interval split, figure. Must run
+  with the R of the starvz-tools closure (needs =arrow=; system R 4.2 has
+  starvz 0.8.2 but no arrow).
 *** Open questions
 - Does the notebook build StarFletcher with Nix (.#no-cuda)?
 - Does starpu_fxt_trace_user_event exist in StarPU 1.4.12?
 - Relation to T6 and IMPL1 (anchors overlap with T6 timestamps).
+- Answered: Nix build works on the notebook (new package
+  =.#star-fletcher-trace=, CPU only, gcc13, StarPU 1.4.12 + FxT 0.3.14);
+  =starpu_fxt_trace_user_event= and =_user_event_string= exist in 1.4.12.
+- New: the StarPU from nix-starpu is built with =--enable-verbose= (warning
+  at init, slows down a bit). Check the option in starpu.nix before PCAD runs.
+- New: FxT buffer was flushed during the run ("increase
+  STARPU_TRACE_BUFFER_SIZE"); trace is 96 MB for 3.3 s. Set a larger buffer.
+- New: first run calibrates the bus and writes =~/.cache/.starpu= (24 KiB
+  before =start=, comm star-fletcher). On PCAD, calibrate once before.
+- Why writeback started 0.48 s after exit (12 MiB) and 5.6 s after exit
+  (rest), not after =dirty_expire_centisecs= (30 s)? Same pattern as
+  IOTRACE1 C3. Matters for T6 (PCAD has more RAM, other vm.dirty_*).
 *** Log
+- 22-10-2026, run =iotrace2-20261022-232054= (notebook santiago, 6.1.0-44,
+  nvme0n1 259:0, 8 CPUs, 7.0 GiB RAM, STARPU_NCPU=4, 1 run, no repetitions).
+  Data: =data/local/iotrace2/iotrace2-20261022-232054/=
+  (=analysis-20261022-232554/=: summary.csv, timeline.pdf/png).
+  - Args =TTI 56 56 56 8 12.5 12.5 12.5 0.0001 0.01 4 0.0001=; =.rsf@=
+    206848000 B (inode 838506). Computation 3.217 s (FxT on).
+  - Anchors (StarVZ ms): start -77.2, tasks_done 3217.4, io_closed and exit
+    3279.7 (tasks_done -> exit 62 ms). Clock alignment by anchor 1, error at
+    anchor 2: 0.53 us (FxT and iotrace both CLOCK_MONOTONIC).
+  - =.rsf@= written back (=wb_inode=, exact): before tasks_done 0 B,
+    tasks_done -> exit 0 B, after exit 206848000 B (100%), from exit+0.48 s
+    to exit+5.83 s, 50 calls by =kworker/u32:*=.
+  - Block level W: app + kworker = 208322560 B (+0.71% of the file); after
+    exit kworker 208293888 B; jbd2 0.6 MiB.
+  - So with mmap, none of the output reaches the disk while StarPU runs or
+    before the process exits: all of it is kernel writeback after exit,
+    invisible to the StarPU trace and to the program time. Small run on a
+    7 GiB notebook; PCAD (more RAM, SATA SSD) may differ (T6).
+  - StarVZ needed a workaround: starpu_fxt_tool puts main-thread user events
+    as =user_user_event= on container =p=, which pj_dump rejects; renamed to
+    =user_event= in a copy (=iotrace2_starvz.sh=).
 
 * Resume for TCC
 
