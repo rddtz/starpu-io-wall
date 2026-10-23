@@ -1428,7 +1428,7 @@ Understand the =seg== field written in the =.rsf= header.
 *** Open questions
 *** Log
 
-** NEXT [#A] IOTRACE1: Build and validate the eBPF block-I/O tracer :impl:ebpf:io:
+** DONE [#A] IOTRACE1: Build and validate the eBPF block-I/O tracer :impl:ebpf:io:
 :PROPERTIES:
 :ID:       iotrace1
 :CREATED:  [2026-10-22 Thu]
@@ -1450,21 +1450,56 @@ validates it standalone on the notebook.
 - [[file:iotrace/iotrace.c]] (new)
 - [[file:iotrace/Makefile]] (new)
 - [[file:iotrace/test/mmap_write.c]] (new)
-*** Acceptance criteria [0/4]
-- [ ] Builds on the notebook with the Makefile (no errors/warnings).
-- [ ] dd oflag=direct of N MB: sum of bytes of block_rq_complete with
+*** Acceptance criteria [4/4]
+- [X] Builds on the notebook with the Makefile (no errors/warnings).
+- [X] dd oflag=direct of N MB: sum of bytes of block_rq_complete with
       comm=dd == N MB exactly.
-- [ ] mmap_write of N MB, exits without msync: writes on the device appear
+- [X] mmap_write of N MB, exits without msync: writes on the device appear
       after process exit, comm=kworker*, total within 5% of N MB.
-- [ ] Runs as a normal user with setcap cap_bpf,cap_perfmon+ep (no sudo, no
+- [X] Runs as a normal user with setcap cap_bpf,cap_perfmon+ep (no sudo, no
       tracefs access).
 *** Verification
 (exact commands written while implementing; one per criterion)
+Device: nvme0n1 = 259:0. CSVs written to /dev/shm (tmpfs) so the trace
+output does not hit the traced disk. Script: iotrace_tests.sh (run as root).
+1. =make -C iotrace=
+2. =iotrace -d 259:0 -t 20 > dd.csv &= then, as the user,
+   =dd if=/dev/zero of=~/ddtest bs=1M count=256 oflag=direct=;
+   sum =bytes= of =rq_complete=, =op=W=, =comm=dd=.
+3. =sync; iotrace -d 259:0 -t 60 > mm.csv &= then =test/mmap_write ~/mmtest 256=;
+   compare =ts_ns= with the printed =exit_ns=, sum =W= bytes by =comm=,
+   sum =wb_inode= bytes for the inode of =~/mmtest= (=stat -c %i=).
+4. =setcap cap_bpf,cap_perfmon+ep iotrace/iotrace=, then as the user
+   (CapEff=0, /sys/kernel/tracing denied) repeat 2 to =cap.csv=.
 *** Open questions
 - Notebook kernel version and /sys/kernel/btf/vmlinux present?
 - Exact tracepoint args of writeback_single_inode on 6.1 vs notebook kernel.
 - Does tp_btf attach work with setcap only (no tracefs)? Criterion 4 tests it.
+  - Answered: kernel 6.1.0-44, BTF present. Signatures:
+    =block_rq_issue(rq)=, =block_rq_complete(rq, err, nr_bytes)=,
+    =writeback_single_inode(inode, wbc, nr_to_write)=. tp_btf works with
+    setcap only (criterion 4).
+- Why did the flusher start at +4.9 s / +10 s after exit and not after
+  =dirty_expire_centisecs= (30 s)? Not checked; matters for T6.
 *** Log
+- 22-10-2026, notebook (6.1.0-44, nvme0n1 259:0), N = 256 MiB = 268435456 B,
+  0 dropped events in all runs. Branch =iotrace1=.
+  - C1: build OK, no warnings.
+  - C2 (root): =comm=dd= W = 268435456 B exactly, 768 requests (each 1 MiB
+    write split into 2 x 508 KiB + 8 KiB by the NVMe limits). dd 811 MB/s.
+  - C3 (root): no write from =mmap_write= before exit (it only dirties pages).
+    =wb_inode= for the file inode: 13 calls, 268435456 B exactly, all by
+    =kworker/u32:*= (flusher), at +4.9 s (20 MiB) and +10.0..10.3 s (236 MiB).
+    Block level: W after exit by =kworker*= = 269946880 B (+0.56%, includes
+    other files and metadata); flusher only (=u32=) = 263176192 B, the rest
+    dispatched by =kworker/N:1H= (kblockd). Journal (=jbd2=) separate.
+    Block events have no inode, so file attribution at block level is by time
+    and comm; =wb_inode= gives the per-file total.
+  - C4 (user + setcap): CapEff=0, tracefs denied, iotrace loads and attaches;
+    =comm=dd= W = 268435456 B exactly (256 x (512 KiB + 508 KiB + 4 KiB)).
+  - Decision: on PCAD write the CSV directly to =$HOME= (NFS, not =sda=);
+    no =/dev/shm= there because StarFletcher needs the RAM.
+  - Note: =make= rebuilding =iotrace= drops the file capabilities.
 
 ** TODO [#A] IOTRACE2: Trace mmap I/O of StarFletcher with eBPF + FxT on the notebook :exp:ebpf:io:starpu:
 :PROPERTIES:
