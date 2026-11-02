@@ -1048,6 +1048,38 @@ Consequences [H, to be measured]:
 7. main.c:749-755 and 823-828 (timing end, =munmap/close=)
 8. io.c:176-219 (commented =O_DIRECT= alternative)
 
+* Hosts
+** santiago (local experiments) :AI:
+Personal Linux notebook used for the local runs (IOTRACE1/2 and next).
+Access: =ssh rayan@santiago= over Tailscale (100.91.203.67; Tailscale SSH,
+may ask a browser check), passwordless =sudo=. Collected on 02-11-2026 via
+ssh (=lscpu=, =free=, =lsblk=, =findmnt=, =/sys/block=, =/proc/sys/vm=).
+
+- OS: Debian 12.13, kernel =6.1.0-44-amd64=.
+- CPU: AMD Ryzen 5 7520U, 1 socket, 4 cores, 2 threads/core (8 CPUs);
+  L1d 128 KiB, L1i 128 KiB, L2 2 MiB (4 x 512 KiB), L3 4 MiB; min 900 MHz
+  (=lscpu= max MHz 6737 looks wrong, not checked).
+- RAM: 7.0 GiB (7480176640 B), ~4.5 GiB available at idle; swap 975 MiB
+  (=nvme0n1p3=).
+- Disk: NVMe =PC SN5000S WD 512GB= (=nvme0n1=, 476.9 GiB), scheduler
+  =none=, =max_hw_sectors_kb= = =max_sectors_kb= = 512.
+- Root: =nvme0n1p2= ext4, 475.5 GiB, =rw,relatime,errors=remount-ro,stripe=128=;
+  02-11-2026: 292 GB used, 152 GB free (66%, after the 30-10 cleanup).
+- Page cache / writeback (=/proc/sys/vm=):
+  | =dirty_background_ratio=    | 10   |
+  | =dirty_ratio=               | 20   |
+  | =dirty_background_bytes=    | 0    |
+  | =dirty_bytes=               | 0    |
+  | =dirty_expire_centisecs=    | 3000 |
+  | =dirty_writeback_centisecs= | 500  |
+  Ratios are of available memory: background writeback from ~450 MB, writer
+  throttling from ~900 MB (estimate, not measured); pages expire after
+  30 s; flusher wakes every 5 s.
+- Hypothesis (not verified): explains IOTRACE2 (~207 MB < ~450 MB, run
+  3.2 s < 30 s, so no writeback during the run).
+- Huge pages: THP =always=; hugetlb sizes 2 MiB and 1 GiB available.
+- eBPF: =unprivileged_bpf_disabled= = 2.
+
 * Project context
 
 Direct I/O in StarFletcher (created 15-10-2026, ex-SPECS.org; migrated to
