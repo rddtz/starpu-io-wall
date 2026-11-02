@@ -1688,47 +1688,68 @@ iotrace/exp/iotrace2_starvz.sh <starvz-tools> data/local/iotrace2/<run>
     panels in the same patchwork (aligned x). New figure:
     =analysis-20261022-234152/timeline.png=; summary unchanged.
 
-** NEXT [#A] IOTRACE3: Attribute disk writes to the submitter (block_bio_queue) :impl:ebpf:io:
+** NEXT [#A] IOTRACE3: Trace who does each write, from page dirtying to disk :impl:ebpf:io:
 :PROPERTIES:
 :ID:       iotrace3
 :CREATED:  [2026-10-23 Fri]
-:ENV:      local:linux-root (Debian notebook)
+:ENV:      local:linux-root (santiago)
 :END:
 *** Description
-iotrace takes comm/pid at block_rq_issue (dispatch to the driver). In IRQ
-context this gives the idle task (swapper/N), and deferred dispatch gives
-kblockd (kworker/N:1H) instead of who asked. Add block_bio_queue to record
-the submitter (flusher, jbd2, process), and show it in the IOTRACE2 figure.
-Bytes, times and wb_inode are correct and not affected. The PCAD admin
-request is on hold until this is done (binary and sha256 will change).
+Answer the advisor's question: is the disk write in the IOTRACE2 figure
+really StarFletcher, or I/O in general? iotrace takes comm/pid at
+block_rq_issue (dispatch to the driver), which gives swapper/N (IRQ) or
+kblockd instead of who asked. Add the signals along the whole write path:
+who dirties pages of which inode, who calls write/sync syscalls, who submits
+bios, plus all disk writes unfiltered, so the SF subset can be checked
+against everything else. Exploration build: overhead is accepted now; keep
+only the needed events for the experiments later. Rewritten on 02-11-2026
+(was: block_bio_queue only). The PCAD admin request stays on hold until the
+binary is final (sha256 will change).
 *** Scope
-- In: new event bio_queue (ts, dev, sector, bytes, op, pid, comm) filtered
-  by device; attribution by submission (no linking to rq events); figure:
-  color by submitter, flusher (kworker/u*) and jbd2 separate, the app
-  grouped by pid; rerun IOTRACE1 tests and IOTRACE2 (same args).
-- Out: PCAD install; linking bios to requests by sector; dirty pages.
+- In (new events, all with ts, pid, tid, comm):
+  - block:block_bio_queue: dev, sector, bytes, op (submitter of each bio).
+  - writeback:writeback_dirty_folio: inode, dev (who dirtied pages of which
+    file; the mmap stores fault here in the app thread).
+  - writeback:balance_dirty_pages: writer throttling (pid, pause).
+  - syscalls write, pwrite64, pwritev, pwritev2, writev (fd, count), msync,
+    fsync, fdatasync, sync_file_range, munmap.
+  - All devices by default (no -d), dev in every event.
+  - Figure: color by submitter (flusher kworker/u*, jbd2, app by pid,
+    other); I/O of non-SF processes shown separately.
+  - Rerun IOTRACE1 tests and IOTRACE2 (same args) with the new build.
+- Out: PCAD install; linking bios to requests by sector; the large run
+  (IOTRACE4); direct_io version (IOTRACE5).
 *** Related files
 - [[file:iotrace/iotrace.bpf.c]]
 - [[file:iotrace/iotrace.c]]
 - [[file:iotrace/iotrace.h]]
+- [[file:iotrace/test/mmap_write.c]]
 - [[file:iotrace/exp/iotrace2_analyze.R]]
-*** Acceptance criteria [0/5]
-- [ ] Builds with the Makefile, no errors/warnings; 0 dropped events.
-- [ ] dd oflag=direct of N MB: bio_queue W bytes with comm=dd == N exactly.
-- [ ] mmap_write of N MB: bio_queue W bytes by kworker/u* after exit
-      within 5% of N; no bio_queue bytes attributed to swapper/*.
-- [ ] IOTRACE2 rerun: figure colored by submitter (flusher, jbd2, app pid),
-      no swapper; flusher bytes after exit within 5% of the .rsf@ size.
+*** Acceptance criteria [0/6]
+- [ ] Builds with the Makefile, no errors/warnings; 0 dropped events in all
+      runs below (reported by iotrace).
+- [ ] dd oflag=direct of N MB: bio_queue W bytes with comm=dd == N exactly;
+      pwrite64/write count sum for dd == N.
+- [ ] mmap_write of N MB: dirty_folio events of its inode with its pid
+      x 4096 within 5% of N; bio_queue W bytes by kworker/u* after exit
+      within 5% of N; 0 bio_queue bytes by swapper/*.
+- [ ] IOTRACE2 rerun: dirty_folio bytes of the .rsf@ inode by SF pid within
+      5% of the .rsf@ size; 0 dirty_folio events on that inode by other pids.
+- [ ] IOTRACE2 rerun figure: colored by submitter, no swapper, non-SF
+      writes listed with bytes per comm.
 - [ ] Runs as a normal user with setcap; new sha256 recorded for the admin.
 *** Verification
 (exact commands written while implementing)
 *** Open questions
-- Event volume/overhead of one event per bio (writeback bios are usually
-  large; not measured).
-- Does flushing a plug from another context ever change the submitter seen
-  at block_bio_queue? (not checked)
-- Verified: block_bio_queue(struct bio *bio) exists in Linux 6.1
-  (include/trace/events/block.h).
+- Volume of writeback_dirty_folio: one event per 4 KiB folio (207 MB ->
+  ~50k events; 15 GB -> ~3.7M). May need in-kernel aggregation per
+  (pid, inode, 100 ms) instead of one event each. Not measured.
+- With THP always, are .rsf@ folios larger than 4 KiB? (bytes per event
+  must come from the folio size, not a constant; not checked).
+- Does flushing a plug from another context change the submitter seen at
+  block_bio_queue? (not checked)
+- Verified 02-11-2026 on santiago (6.1.0-44, available_events): all events
+  above exist.
 *** Log
 
 * Resume for TCC
