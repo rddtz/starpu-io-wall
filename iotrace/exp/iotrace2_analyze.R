@@ -78,6 +78,62 @@ disk_w <- io %>%
   mutate(interval = interval_of(t_ms),
          who = ifelse(grepl("^kworker", comm), "kworker", comm))
 
+sf_pid <- suppressWarnings(as.numeric(sub("^sf_pid=", "", grep("^sf_pid=", env, value = TRUE))))
+
+# ---- who submitted each write (iotrace with bio_queue, IOTRACE3) ---------------
+# block_bio_queue runs in the submitter context, so unlike rq_issue it never
+# shows swapper (irq) or kblockd (deferred dispatch).
+submitter_of <- function(pid, comm) {
+  case_when(length(sf_pid) == 1 & as.numeric(pid) == sf_pid ~ "StarFletcher",
+            grepl("^kworker/u", comm) ~ "flusher (kworker/u*)",
+            grepl("^jbd2/", comm) ~ "jbd2 (ext4 journal)",
+            TRUE ~ "other")
+}
+has_bio <- any(io$event == "bio_queue")
+if (has_bio) {
+  bio_w <- io %>%
+    filter(event == "bio_queue", op == "W") %>%
+    mutate(interval = interval_of(t_ms), who = submitter_of(pid, comm))
+  by_comm <- bio_w %>%
+    group_by(interval, who, dev, pid, comm) %>%
+    summarise(bytes = sum(bytes), bios = n(), .groups = "drop") %>%
+    arrange(interval, desc(bytes))
+  write_csv(by_comm, file.path(out_dir, "disk_submitted_by_comm.csv"))
+  cat("disk W submitted (bio_queue), by submitter:\n")
+  print(bio_w %>% group_by(interval, who) %>%
+          summarise(bytes = sum(bytes), bios = n(), .groups = "drop"))
+  cat("disk W submitted by processes other than StarFletcher and the kernel",
+      "threads (flusher, jbd2), by comm:\n")
+  print(by_comm %>% filter(who == "other") %>% group_by(comm) %>%
+          summarise(bytes = sum(bytes), bios = sum(bios), .groups = "drop") %>%
+          arrange(desc(bytes)), n = Inf)
+}
+if (any(io$event == "syscall")) {
+  sc <- io %>%
+    filter(event == "syscall") %>%
+    mutate(interval = interval_of(t_ms), dur_ms = as.numeric(aux2) / 1e6) %>%
+    group_by(interval, pid, comm, op, dev, inode) %>%
+    summarise(calls = n(), bytes = sum(bytes), dur_ms_sum = sum(dur_ms),
+              dur_ms_max = max(dur_ms), .groups = "drop") %>%
+    arrange(interval, desc(bytes))
+  write_csv(sc, file.path(out_dir, "syscalls.csv"))
+  cat("write/sync syscalls on disk files (and msync/munmap >= 1 MiB):\n")
+  print(sc, n = 40)
+}
+if (any(io$event == "bdp")) {
+  bdp <- io %>%
+    filter(event == "bdp") %>%
+    mutate(interval = interval_of(t_ms), pause_j = as.numeric(aux2)) %>%
+    group_by(interval, pid, comm) %>%
+    summarise(calls = n(), sleeps = sum(pause_j > 0),
+              pause_jiffies = sum(pmax(pause_j, 0)),
+              max_dirty_bytes = max(bytes), dirty_thresh_bytes = max(as.numeric(aux1)),
+              .groups = "drop")
+  write_csv(bdp, file.path(out_dir, "dirty_throttling.csv"))
+  cat("balance_dirty_pages (pause in jiffies; HZ in env.txt or the notes):\n")
+  print(bdp, n = 40)
+}
+
 intervals <- c("0_before_start", "1_start_to_tasks_done",
                "2_tasks_done_to_exit", "3_after_exit")
 summary <- tibble(interval = intervals) %>%
@@ -103,7 +159,6 @@ cat("file writeback first/last after exit (s):",
     (min(file_wb$t_ms) - a["exit"]) / 1e3, (max(file_wb$t_ms) - a["exit"]) / 1e3, "\n")
 
 # ---- who dirtied the file, and why writeback ran (iotrace with dirty/wb_start)
-sf_pid <- suppressWarnings(as.numeric(sub("^sf_pid=", "", grep("^sf_pid=", env, value = TRUE))))
 if (any(io$event == "dirty")) {
   dirtiers <- io %>%
     filter(event == "dirty", inode == !!inode) %>%
@@ -154,7 +209,10 @@ data$config$limits$end <- x_lim[2]
 p_starvz <- starvz_assemble(starvz_plot_list(data), config = data$config)
 
 bin_ms <- 100
-disk_rate <- disk_w %>%
+# with bio_queue: colour by submitter, time = submission; else rq_complete
+rate_src <- if (has_bio) bio_w else disk_w
+rate_lab <- if (has_bio) "disk W submitted\n(MiB/s)" else "disk W\n(MiB/s)"
+disk_rate <- rate_src %>%
   filter(t_ms >= x_lim[1], t_ms <= x_lim[2]) %>%
   mutate(bin = floor(t_ms / bin_ms) * bin_ms) %>%
   group_by(bin, who) %>%
@@ -163,7 +221,7 @@ disk_rate <- disk_w %>%
 p_rate <- ggplot(disk_rate, aes(x = bin, y = mb_s, fill = who)) +
   geom_col(width = bin_ms, position = "stack") +
   vline_layer +
-  labs(x = NULL, y = "disk W\n(MiB/s)", fill = NULL) +
+  labs(x = NULL, y = rate_lab, fill = NULL) +
   theme_bw() + theme(legend.position = "top")
 
 cum <- file_wb %>% arrange(t_ms) %>% mutate(mib = cumsum(bytes) / 1048576)

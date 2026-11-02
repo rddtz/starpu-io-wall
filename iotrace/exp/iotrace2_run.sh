@@ -11,7 +11,7 @@ set -euo pipefail
 SF_BIN=$1
 TCC=$(cd "$(dirname "$0")/../.." && pwd)
 IOTRACE=$TCC/iotrace/iotrace
-DEV=${DEV:-259:0}
+DEV=${DEV-259:0}       # DEV= (empty) traces all disks
 NCPU=${NCPU:-4}
 TAIL_S=${TAIL_S:-60}   # keep tracing after exit to catch writeback
 ARGS=${ARGS:-"TTI 56 56 56 8 12.5 12.5 12.5 0.0001 0.01 4 0.0001"}
@@ -25,7 +25,8 @@ mkdir -p "$DATA" "$RSF_DIR" "$SHM/fxt"
 
 {
     echo "run=$RUN"; date -Is; uname -r; nproc
-    echo "dev=$DEV ncpu=$NCPU tail_s=$TAIL_S"
+    echo "dev=${DEV:-all} ncpu=$NCPU tail_s=$TAIL_S"
+    grep '^CONFIG_HZ=' "/boot/config-$(uname -r)" || true
     echo "args=$ARGS"
     echo "sf_bin=$SF_BIN"
     echo "tcc_commit=$(git -C "$TCC" rev-parse HEAD)"
@@ -37,7 +38,7 @@ mkdir -p "$DATA" "$RSF_DIR" "$SHM/fxt"
 } > "$SHM/env.txt"
 
 sync
-"$IOTRACE" -d "$DEV" > "$SHM/io.csv" 2> "$SHM/io.err" &
+"$IOTRACE" ${DEV:+-d "$DEV"} > "$SHM/io.csv" 2> "$SHM/io.err" &
 IO_PID=$!
 sleep 2
 
