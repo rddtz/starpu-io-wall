@@ -14,7 +14,7 @@ IOTRACE=$TCC/iotrace/iotrace
 DEV=${DEV:-259:0}
 NCPU=${NCPU:-4}
 TAIL_S=${TAIL_S:-60}   # keep tracing after exit to catch writeback
-ARGS="TTI 56 56 56 8 12.5 12.5 12.5 0.0001 0.01 4 0.0001"
+ARGS=${ARGS:-"TTI 56 56 56 8 12.5 12.5 12.5 0.0001 0.01 4 0.0001"}
 
 RUN=iotrace2-$(date +%Y%m%d-%H%M%S)
 DATA=$TCC/data/local/iotrace2/$RUN
@@ -46,7 +46,10 @@ cd "$SHM"
 OUTPUT_FOLDER=$RSF_DIR OUTPUT_FILE=$RUN \
 STARPU_NCPU=$NCPU STARPU_NCUDA=0 \
 STARPU_FXT_TRACE=1 STARPU_FXT_PREFIX=$SHM/fxt/ \
-    "$SF_BIN" $ARGS > "$SHM/sf.log" 2>&1
+    "$SF_BIN" $ARGS > "$SHM/sf.log" 2>&1 &
+SF_PID=$!
+echo "sf_pid=$SF_PID" >> "$SHM/env.txt"
+wait "$SF_PID"
 
 stat -c 'inode=%i size=%s' "$RSF_DIR/out-$RUN.rsf@" >> "$SHM/env.txt"
 sleep "$TAIL_S"

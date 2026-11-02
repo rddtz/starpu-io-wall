@@ -1,5 +1,5 @@
 /*
- * iotrace: print block request and writeback events as CSV.
+ * iotrace: print block request, writeback and page-dirty events as CSV.
  *
  * Usage: iotrace [-d MAJ:MIN] [-t SECONDS]
  *   -d  whole-disk device to trace (e.g. 8:0 for sda); default: all disks
@@ -7,6 +7,11 @@
  *
  * Output (stdout): ts_ns,event,dev,op,sector,bytes,pid,comm,inode
  * ts_ns is CLOCK_MONOTONIC. Diagnostics go to stderr.
+ * Events:
+ *   rq_issue, rq_complete  block request; op R/W/F/D, sector on the disk
+ *   wb_inode               writeback of one inode; bytes submitted
+ *   dirty                  page of inode dirtied by pid/comm; sector = page index
+ *   wb_start               writeback pass; op = reason (background, periodic, ...)
  */
 #include <errno.h>
 #include <signal.h>
@@ -42,14 +47,34 @@ static const char *type_name(__u32 type)
 	case EV_RQ_ISSUE:    return "rq_issue";
 	case EV_RQ_COMPLETE: return "rq_complete";
 	case EV_WB_INODE:    return "wb_inode";
+	case EV_DIRTY:       return "dirty";
+	case EV_WB_START:    return "wb_start";
 	default:             return "unknown";
+	}
+}
+
+/* enum wb_reason, include/linux/backing-dev-defs.h */
+static const char *wb_reason_name(__u32 reason)
+{
+	switch (reason) {
+	case 0:  return "background";
+	case 1:  return "vmscan";
+	case 2:  return "sync";
+	case 3:  return "periodic";
+	case 4:  return "laptop_timer";
+	case 5:  return "fs_free_space";
+	case 6:  return "forker_thread";
+	case 7:  return "foreign_flush";
+	default: return "other";
 	}
 }
 
 static const char *op_name(const struct iotrace_event *e)
 {
-	if (e->type == EV_WB_INODE)
+	if (e->type == EV_WB_INODE || e->type == EV_DIRTY)
 		return "";
+	if (e->type == EV_WB_START)
+		return wb_reason_name(e->op);
 	switch (e->op) {
 	case 0:  return "R";
 	case 1:  return "W";

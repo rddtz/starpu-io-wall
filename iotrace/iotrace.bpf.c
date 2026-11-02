@@ -12,6 +12,7 @@ char LICENSE[] SEC("license") = "GPL";
 
 #define REQ_OP_MASK 0xff
 #define PAGE_SZ 4096
+#define MINORBITS 20
 
 /* Set by the loader before load; filter_dev == 0 means trace all disks. */
 const volatile __u32 filter_dev = 0;
@@ -45,6 +46,16 @@ static __always_inline bool dev_match(struct gendisk *disk, __u32 *maj, __u32 *m
 		return false;
 	*maj = disk->major;
 	*min = disk->first_minor;
+	if (!filter_dev)
+		return true;
+	return *maj == target_major && *min == target_minor;
+}
+
+/* Same filter for a kernel dev_t (MAJOR in the top 12 bits). */
+static __always_inline bool devt_match(dev_t devt, __u32 *maj, __u32 *min)
+{
+	*maj = devt >> MINORBITS;
+	*min = devt & ((1U << MINORBITS) - 1);
 	if (!filter_dev)
 		return true;
 	return *maj == target_major && *min == target_minor;
@@ -153,6 +164,74 @@ int BPF_PROG(wb_inode, struct inode *inode, struct writeback_control *wbc,
 	e->sector = 0;
 	e->bytes = wrote > 0 ? (__u64)wrote * PAGE_SZ : 0;
 	e->inode = inode->i_ino;
+	e->pid = bpf_get_current_pid_tgid() >> 32;
+	bpf_get_current_comm(e->comm, sizeof(e->comm));
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+/*
+ * A page of a file goes from clean to dirty. Runs in the context of the task
+ * that dirtied it (write() or a write fault on a shared mapping), so this is
+ * where the process behind the later kworker writeback is known.
+ * ext4 on 6.1 uses order-0 folios for regular files, so one page per event.
+ */
+SEC("tp_btf/writeback_dirty_folio")
+int BPF_PROG(dirty_folio, struct folio *folio, struct address_space *mapping)
+{
+	struct iotrace_event *e;
+	struct inode *inode;
+	__u32 maj, min;
+
+	if (!mapping)
+		return 0;
+	inode = mapping->host;
+	if (!inode || !dev_match(inode->i_sb->s_bdev->bd_disk, &maj, &min))
+		return 0;
+
+	e = reserve();
+	if (!e)
+		return 0;
+	e->ts_ns = bpf_ktime_get_ns();
+	e->type = EV_DIRTY;
+	e->op = 0;
+	e->major = maj;
+	e->minor = min;
+	e->sector = folio->index;
+	e->bytes = PAGE_SZ;
+	e->inode = inode->i_ino;
+	e->pid = bpf_get_current_pid_tgid() >> 32;
+	bpf_get_current_comm(e->comm, sizeof(e->comm));
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+/* Start of a writeback pass; work->reason says what triggered it. */
+SEC("tp_btf/writeback_start")
+int BPF_PROG(wb_start, struct bdi_writeback *wb, struct wb_writeback_work *work)
+{
+	struct iotrace_event *e;
+	struct device *owner;
+	__u32 maj, min;
+	long nr;
+
+	owner = wb->bdi->owner;
+	if (!owner || !devt_match(owner->devt, &maj, &min))
+		return 0;
+
+	e = reserve();
+	if (!e)
+		return 0;
+	nr = work->nr_pages;
+	e->ts_ns = bpf_ktime_get_ns();
+	e->type = EV_WB_START;
+	e->op = work->reason;
+	e->major = maj;
+	e->minor = min;
+	e->sector = 0;
+	/* background and sync passes use LONG_MAX as "no limit" */
+	e->bytes = (nr > 0 && nr < (1L << 40)) ? (__u64)nr * PAGE_SZ : 0;
+	e->inode = 0;
 	e->pid = bpf_get_current_pid_tgid() >> 32;
 	bpf_get_current_comm(e->comm, sizeof(e->comm));
 	bpf_ringbuf_submit(e, 0);

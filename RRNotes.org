@@ -1687,6 +1687,55 @@ iotrace/exp/iotrace2_starvz.sh <starvz-tools> data/local/iotrace2/<run>
     panels (Iteration, Application Workers, Submitted, Ready) with the I/O
     panels in the same patchwork (aligned x). New figure:
     =analysis-20261022-234152/timeline.png=; summary unchanged.
+- 23-10-2026, iotrace extended (=iotrace-dirty= branch): =dirty= event
+  (=writeback_dirty_folio=: inode, page index, pid/comm of the task that
+  dirtied the page) and =wb_start= (=writeback_start=: reason of each
+  writeback pass). Validated with =mmap_write= 256 MiB: dirty events of the
+  file = 268435456 B exactly, all =comm=mmap_write=. Side finding: rewriting
+  an existing file with =O_TRUNC= triggers ext4 =auto_da_alloc= (flush at
+  close), so ~104 MB were issued by the process before exit; the =.rsf@= is
+  always a new file, so this does not apply to StarFletcher.
+- 23-10-2026, run =iotrace2-20261023-020353= (forced writeback during the
+  run): =TTI 176 176 176 8 12.5 12.5 12.5 0.0001 0.01 4 0.0001= (volume 200^3,
+  blocks 50^3 = 500 KB, output every iteration, 101 frames x 32 MB, =.rsf@=
+  3232000000 B), STARPU_NCPU=4, 1 run. Computation 45.27 s, 0 dropped
+  events, clock error 0.45 us. Analysis: =analysis-20261023-020721/=.
+  - Who dirtied the file (measured, no longer assumed): all 842854 dirty
+    events of the inode come from sf_pid 10552, threads =CPU 0..3= (StarPU
+    workers), all between =start= and =tasks_done=.
+  - Re-dirty: 789063 unique pages (= file) but 50503 pages dirtied twice, so
+    3452329984 B were dirtied and written back (+6.8% over the file). A page
+    holds data of neighbouring blocks; it is written back after the first
+    block and dirtied again by the next one: write amplification caused by
+    writeback during the run.
+  - Written back (=wb_inode=): start -> tasks_done 3147792384 B (91.2%),
+    tasks_done -> exit 0, after exit 304537600 B (8.8%, until exit+6.6 s).
+    Block level W: 3.10 GB during, 8 MB between, 357 MB after exit.
+  - Trigger (=wb_start= on the same flusher thread): periodic 2860933120 B
+    (80 calls), background 591396864 B (27 calls); first background at
+    ~3.9 s after start. Periodic dominates although the pages are young:
+    likely because the inode =dirtied_when= is not reset while it stays
+    dirty, so after 30 s the whole inode is "old" for kupdate (not verified).
+  - write_block median 0.36 ms, but at ~30.7 s three workers were stuck
+    650-706 ms at the same time (write_block = 5.4% of worker time). Cause
+    not verified (dirty throttling or waiting on a page under writeback).
+- 23-10-2026, repeat =iotrace2-20261023-021233= (same args, to check if
+  the write_block stall was the environment). Figures with
+  =iotrace/exp/starvz_st.yaml= (Gantt only): =analysis-20261023-021528/=
+  (run 1 re-plotted: =analysis-20261023-021438/=). Computation 48.79 s
+  (run 1: 45.27 s). Interference: during this run I ran =python3= and
+  =git commit= (small disk writes, shown in the disk W panel).
+  | run | during | after exit | dirtied/file | stalls >100 ms | max | write_block share |
+  |-----+--------+------------+--------------+----------------+-----+-------------------|
+  | 1   | 91.2%  | 8.8%       | +6.8%        | 5              | 706 ms  | 5.4% |
+  | 2   | 92.8%  | 7.2%       | +12.4%       | 12             | 1604 ms | 8.4% |
+  - Run 2 also has vmscan passes (428 MB of the file; free RAM at start
+    0.8 GB vs 1.3 GB in run 1): memory pressure pushed writeback too.
+  - Stalls happen in both runs, at different times (run 1: 25.6, 30.7 s;
+    run 2: 25.5, 26.3, 32.5, 35.6, 40.6 s), so not a one-off of the
+    environment. All of them overlap a writeback pass, but 76-80% of random
+    1.3 s windows also do, so this does not prove the cause.
+  - Still all dirty pages of the file from the SF pid (14868, CPU 0..3).
 
 ** NEXT [#A] IOTRACE3: Trace who does each write, from page dirtying to disk :impl:ebpf:io:
 :PROPERTIES:
