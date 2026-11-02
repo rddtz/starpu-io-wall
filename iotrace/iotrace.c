@@ -5,13 +5,23 @@
  *   -d  whole-disk device to trace (e.g. 8:0 for sda); default: all disks
  *   -t  stop after SECONDS; default: until SIGINT/SIGTERM
  *
- * Output (stdout): ts_ns,event,dev,op,sector,bytes,pid,comm,inode
+ * Output (stdout): ts_ns,event,dev,op,sector,bytes,pid,comm,inode,tid,aux1,aux2,ret
  * ts_ns is CLOCK_MONOTONIC. Diagnostics go to stderr.
  * Events:
  *   rq_issue, rq_complete  block request; op R/W/F/D, sector on the disk
  *   wb_inode               writeback of one inode; bytes submitted
  *   dirty                  page of inode dirtied by pid/comm; sector = page index
  *   wb_start               writeback pass; op = reason (background, periodic, ...)
+ *   bio_queue              bio submitted by pid/tid/comm; op R/W/F/D, sector, bytes
+ *   bdp                    balance_dirty_pages of the writer; bytes = global dirty,
+ *                          sector = background threshold, aux1 = dirty threshold
+ *                          (all bytes), aux2 = pause in jiffies (< 0: no sleep)
+ *   syscall                op = write, pwrite64, writev, pwritev, pwritev2, fsync,
+ *                          fdatasync, sync_file_range (fd on a disk only), msync,
+ *                          munmap (>= 1 MiB only); ts at exit, aux1 = fd (or
+ *                          address), sector = count/vlen/len, bytes = return if
+ *                          > 0, ret = raw return, aux2 = duration ns, inode of fd
+ * Syscall numbers are x86_64.
  */
 #include <errno.h>
 #include <signal.h>
@@ -49,6 +59,9 @@ static const char *type_name(__u32 type)
 	case EV_WB_INODE:    return "wb_inode";
 	case EV_DIRTY:       return "dirty";
 	case EV_WB_START:    return "wb_start";
+	case EV_BIO_QUEUE:   return "bio_queue";
+	case EV_BDP:         return "bdp";
+	case EV_SYSCALL:     return "syscall";
 	default:             return "unknown";
 	}
 }
@@ -69,10 +82,29 @@ static const char *wb_reason_name(__u32 reason)
 	}
 }
 
+static const char *syscall_name(__u32 nr)
+{
+	switch (nr) {
+	case IOTRACE_NR_WRITE:           return "write";
+	case IOTRACE_NR_MUNMAP:          return "munmap";
+	case IOTRACE_NR_PWRITE64:        return "pwrite64";
+	case IOTRACE_NR_WRITEV:          return "writev";
+	case IOTRACE_NR_MSYNC:           return "msync";
+	case IOTRACE_NR_FSYNC:           return "fsync";
+	case IOTRACE_NR_FDATASYNC:       return "fdatasync";
+	case IOTRACE_NR_SYNC_FILE_RANGE: return "sync_file_range";
+	case IOTRACE_NR_PWRITEV:         return "pwritev";
+	case IOTRACE_NR_PWRITEV2:        return "pwritev2";
+	default:                         return "other";
+	}
+}
+
 static const char *op_name(const struct iotrace_event *e)
 {
-	if (e->type == EV_WB_INODE || e->type == EV_DIRTY)
+	if (e->type == EV_WB_INODE || e->type == EV_DIRTY || e->type == EV_BDP)
 		return "";
+	if (e->type == EV_SYSCALL)
+		return syscall_name(e->op);
 	if (e->type == EV_WB_START)
 		return wb_reason_name(e->op);
 	switch (e->op) {
@@ -100,11 +132,13 @@ static int handle_event(void *ctx, void *data, size_t size)
 		if (*p == ',' || *p == '\n' || *p == '"')
 			*p = '_';
 
-	printf("%llu,%s,%u:%u,%s,%llu,%llu,%u,%s,%llu\n",
+	printf("%llu,%s,%u:%u,%s,%llu,%llu,%u,%s,%llu,%u,%llu,%lld,%lld\n",
 	       (unsigned long long)e->ts_ns, type_name(e->type), e->major, e->minor,
 	       op_name(e), (unsigned long long)e->sector,
 	       (unsigned long long)e->bytes, e->pid, comm,
-	       (unsigned long long)e->inode);
+	       (unsigned long long)e->inode, e->tid,
+	       (unsigned long long)e->aux1, (long long)e->aux2,
+	       (long long)e->ret);
 	return 0;
 }
 
@@ -232,7 +266,7 @@ int main(int argc, char **argv)
 	if (seconds)
 		deadline = now_s() + seconds;
 
-	printf("ts_ns,event,dev,op,sector,bytes,pid,comm,inode\n");
+	printf("ts_ns,event,dev,op,sector,bytes,pid,comm,inode,tid,aux1,aux2,ret\n");
 	fprintf(stderr, "iotrace: tracing %s\n", dev_arg);
 
 	while (!stop && (!deadline || now_s() < deadline)) {

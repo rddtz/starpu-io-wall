@@ -6,6 +6,7 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
 #include "iotrace.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -65,9 +66,21 @@ static __always_inline struct iotrace_event *reserve(void)
 {
 	struct iotrace_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 
-	if (!e)
+	if (!e) {
 		__sync_fetch_and_add(&dropped, 1);
+		return e;
+	}
+	/* Fields not used by every event; the others set what they need. */
+	e->aux1 = 0;
+	e->aux2 = 0;
+	e->ret = 0;
+	e->tid = 0;
 	return e;
+}
+
+static __always_inline __u32 cur_tid(void)
+{
+	return (__u32)bpf_get_current_pid_tgid();
 }
 
 SEC("tp_btf/block_rq_issue")
@@ -98,6 +111,7 @@ int BPF_PROG(rq_issue, struct request *rq)
 	e->inode = 0;
 	e->pid = w.pid;
 	__builtin_memcpy(e->comm, w.comm, sizeof(e->comm));
+	e->tid = cur_tid();
 	bpf_ringbuf_submit(e, 0);
 	return 0;
 }
@@ -194,6 +208,7 @@ int BPF_PROG(dirty_folio, struct folio *folio, struct address_space *mapping)
 		return 0;
 	e->ts_ns = bpf_ktime_get_ns();
 	e->type = EV_DIRTY;
+	e->tid = cur_tid();
 	e->op = 0;
 	e->major = maj;
 	e->minor = min;
@@ -235,5 +250,225 @@ int BPF_PROG(wb_start, struct bdi_writeback *wb, struct wb_writeback_work *work)
 	e->pid = bpf_get_current_pid_tgid() >> 32;
 	bpf_get_current_comm(e->comm, sizeof(e->comm));
 	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+/*
+ * A bio enters the block layer. Runs in the context of the task that
+ * submitted it (flusher kworker/u*, jbd2, or the process for O_DIRECT and
+ * sync writes), before any plug flush or kblockd dispatch, so this is the
+ * submitter that block_rq_issue does not see.
+ */
+SEC("tp_btf/block_bio_queue")
+int BPF_PROG(bio_queue, struct bio *bio)
+{
+	struct iotrace_event *e;
+	__u32 maj, min;
+
+	if (!bio->bi_bdev || !dev_match(bio->bi_bdev->bd_disk, &maj, &min))
+		return 0;
+
+	e = reserve();
+	if (!e)
+		return 0;
+	e->ts_ns = bpf_ktime_get_ns();
+	e->type = EV_BIO_QUEUE;
+	e->op = bio->bi_opf & REQ_OP_MASK;
+	e->major = maj;
+	e->minor = min;
+	e->sector = bio->bi_iter.bi_sector;
+	e->bytes = bio->bi_iter.bi_size;
+	e->inode = 0;
+	e->pid = bpf_get_current_pid_tgid() >> 32;
+	e->tid = cur_tid();
+	bpf_get_current_comm(e->comm, sizeof(e->comm));
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+/*
+ * A task that dirties pages goes through the dirty throttling check. Fires
+ * from balance_dirty_pages() in the context of the writer; pause > 0 means
+ * the task was put to sleep for that many jiffies.
+ */
+SEC("tp_btf/balance_dirty_pages")
+int BPF_PROG(bdp, struct bdi_writeback *wb, unsigned long thresh,
+	     unsigned long bg_thresh, unsigned long dirty, unsigned long bdi_thresh,
+	     unsigned long bdi_dirty, unsigned long dirty_ratelimit,
+	     unsigned long task_ratelimit, unsigned long dirtied,
+	     unsigned long period, long pause, unsigned long start_time)
+{
+	struct iotrace_event *e;
+	struct device *owner;
+	__u32 maj, min;
+
+	owner = wb->bdi->owner;
+	if (!owner || !devt_match(owner->devt, &maj, &min))
+		return 0;
+
+	e = reserve();
+	if (!e)
+		return 0;
+	e->ts_ns = bpf_ktime_get_ns();
+	e->type = EV_BDP;
+	e->op = 0;
+	e->major = maj;
+	e->minor = min;
+	e->sector = (__u64)bg_thresh * PAGE_SZ;
+	e->bytes = (__u64)dirty * PAGE_SZ;
+	e->inode = 0;
+	e->aux1 = (__u64)thresh * PAGE_SZ;
+	e->aux2 = pause;
+	e->pid = bpf_get_current_pid_tgid() >> 32;
+	e->tid = cur_tid();
+	bpf_get_current_comm(e->comm, sizeof(e->comm));
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+/* Write/sync syscall seen at enter, completed at exit (key: thread id). */
+struct pending {
+	__u64 ts_ns;
+	__u64 sector;
+	__u64 aux1;
+	__u64 inode;
+	__u32 nr;
+	__u32 major;
+	__u32 minor;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, __u32);
+	__type(value, struct pending);
+} pending SEC(".maps");
+
+static __always_inline bool num_match(__u32 maj, __u32 min)
+{
+	if (!filter_dev)
+		return true;
+	return maj == target_major && min == target_minor;
+}
+
+/*
+ * Inode and disk of fd in the current task. Only files on a block device
+ * count (pipes, sockets and ttys have no s_bdev and are skipped).
+ */
+static __always_inline bool fd_file(int fd, struct pending *p)
+{
+	struct task_struct *task = bpf_get_current_task_btf();
+	struct fdtable *fdt;
+	struct file **arr;
+	struct file *f = NULL;
+	struct inode *ino;
+	struct gendisk *disk;
+	unsigned int max;
+
+	if (fd < 0)
+		return false;
+	fdt = BPF_CORE_READ(task, files, fdt);
+	if (!fdt)
+		return false;
+	max = BPF_CORE_READ(fdt, max_fds);
+	if ((unsigned int)fd >= max)
+		return false;
+	arr = BPF_CORE_READ(fdt, fd);
+	if (!arr || bpf_probe_read_kernel(&f, sizeof(f), &arr[fd]) || !f)
+		return false;
+	ino = BPF_CORE_READ(f, f_inode);
+	if (!ino)
+		return false;
+	disk = BPF_CORE_READ(ino, i_sb, s_bdev, bd_disk);
+	if (!disk)
+		return false;
+	p->major = BPF_CORE_READ(disk, major);
+	p->minor = BPF_CORE_READ(disk, first_minor);
+	if (!num_match(p->major, p->minor))
+		return false;
+	p->inode = BPF_CORE_READ(ino, i_ino);
+	return true;
+}
+
+SEC("tp_btf/sys_enter")
+int BPF_PROG(sys_enter, struct pt_regs *regs, long id)
+{
+	struct pending p = {};
+	__u32 tid = cur_tid();
+
+	switch (id) {
+	case IOTRACE_NR_WRITE:
+	case IOTRACE_NR_PWRITE64:
+	case IOTRACE_NR_WRITEV:
+	case IOTRACE_NR_PWRITEV:
+	case IOTRACE_NR_PWRITEV2:
+	case IOTRACE_NR_SYNC_FILE_RANGE:
+		/* arg 3: count (write, pwrite64), vlen (writev family),
+		   nbytes (sync_file_range: fd, offset, nbytes, flags) */
+		p.sector = regs->dx;
+		p.aux1 = regs->di;
+		if (!fd_file((int)regs->di, &p))
+			return 0;
+		break;
+	case IOTRACE_NR_FSYNC:
+	case IOTRACE_NR_FDATASYNC:
+		p.aux1 = regs->di;
+		if (!fd_file((int)regs->di, &p))
+			return 0;
+		break;
+	case IOTRACE_NR_MUNMAP:
+		if (regs->si < IOTRACE_MUNMAP_MIN)
+			return 0;
+		/* fallthrough */
+	case IOTRACE_NR_MSYNC:
+		/* (addr, len, ...): no fd, so no inode and no device filter */
+		p.sector = regs->si;
+		p.aux1 = regs->di;
+		break;
+	default:
+		return 0;
+	}
+	p.nr = id;
+	p.ts_ns = bpf_ktime_get_ns();
+	bpf_map_update_elem(&pending, &tid, &p, BPF_ANY);
+	return 0;
+}
+
+SEC("tp_btf/sys_exit")
+int BPF_PROG(sys_exit, struct pt_regs *regs, long ret)
+{
+	struct iotrace_event *e;
+	struct pending *p;
+	__u32 tid = cur_tid();
+	__u64 now;
+
+	p = bpf_map_lookup_elem(&pending, &tid);
+	if (!p)
+		return 0;
+	if (p->nr != (__u32)regs->orig_ax) {
+		bpf_map_delete_elem(&pending, &tid);
+		return 0;
+	}
+	now = bpf_ktime_get_ns();
+
+	e = reserve();
+	if (e) {
+		e->ts_ns = now;
+		e->type = EV_SYSCALL;
+		e->op = p->nr;
+		e->major = p->major;
+		e->minor = p->minor;
+		e->sector = p->sector;
+		e->bytes = ret > 0 ? (__u64)ret : 0;
+		e->inode = p->inode;
+		e->aux1 = p->aux1;
+		e->aux2 = now - p->ts_ns;
+		e->ret = ret;
+		e->pid = bpf_get_current_pid_tgid() >> 32;
+		e->tid = tid;
+		bpf_get_current_comm(e->comm, sizeof(e->comm));
+		bpf_ringbuf_submit(e, 0);
+	}
+	bpf_map_delete_elem(&pending, &tid);
 	return 0;
 }
