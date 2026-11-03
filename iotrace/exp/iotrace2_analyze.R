@@ -204,6 +204,19 @@ vline_layer <- list(
 data <- starvz_read(file.path(run_dir, "fxt"), config_file = config_file,
                     selective = FALSE)
 data$config <- modifyList(starvz:::starvz_default_config(), data$config)
+
+# write_block durations (StarVZ ms), overall and per worker
+wb_tasks <- data$Application %>% filter(Value == "write_block")
+wb_stats <- bind_rows(
+  wb_tasks %>% mutate(ResourceId = "all"),
+  wb_tasks %>% mutate(ResourceId = as.character(ResourceId))) %>%
+  group_by(ResourceId) %>%
+  summarise(n = n(), median_ms = median(Duration),
+            p99_ms = quantile(Duration, 0.99), max_ms = max(Duration),
+            n_gt_100ms = sum(Duration > 100), total_ms = sum(Duration),
+            .groups = "drop")
+write_csv(wb_stats, file.path(out_dir, "write_block_stats.csv"))
+cat("write_block durations (ms):\n"); print(wb_stats)
 data$config$limits$start <- x_lim[1]
 data$config$limits$end <- x_lim[2]
 p_starvz <- starvz_assemble(starvz_plot_list(data), config = data$config)
