@@ -9,6 +9,51 @@
 
 
 * Work
+** 2026 Week 45 [Nov]
+*** 02-11-2026: IOTRACE3, who does each write
+**** Merge iotrace-dirty and extend iotrace                              :AI:
+- santiago had 7 unpushed commits (branch =iotrace-dirty=, 23-10: =dirty=
+  and =wb_start= events, forced writeback runs). Pushed, merged into =main=
+  (=ef62f21=).
+- New iotrace events (=d41b89e=): =bio_queue= (block_bio_queue, submitter
+  of each bio), =bdp= (balance_dirty_pages, writer throttling), =syscall=
+  (write family, fsync, fdatasync, sync_file_range on disk files with the
+  inode of the fd; msync; munmap >= 1 MiB), plus =tid=. CSV columns added at
+  the end: =tid,aux1,aux2,ret=. Syscall numbers are x86_64.
+- Tests (=7897c49=): =iotrace/test/iotrace3_tests.sh= (dd O_DIRECT and
+  mmap_write, all disks, CSVs on =/dev/shm=) and =iotrace3_check.py=.
+- Analysis (=9ed5ddc=): =iotrace2_run.sh= accepts =DEV== (all disks) and
+  records =CONFIG_HZ=; =iotrace2_analyze.R= colours disk W by submitter
+  (bio_queue) and writes =disk_submitted_by_comm.csv=, =syscalls.csv=,
+  =dirty_throttling.csv=.
+- StarVZ was removed by the 30-10 Nix GC; rebuilt with the command in
+  IOTRACE2 Verification, now a GC root at =~/sf-runs/result-starvz=.
+**** Results (santiago, 1 run each, no repetitions)                      :AI:
+- Tests 256 MiB (=/dev/shm/iotrace3-20261102-134208=), 0 dropped:
+  - dd: bio_queue W by =dd= = 268435456 B; write syscalls by =dd= =
+    268435456 B (exact).
+  - mmap_write: dirty of its inode = 268435456 B, all =mmap_write=;
+    bio_queue W by =kworker/u*= after exit 269504512 B (+0.4%); swapper 0.
+- IOTRACE2 rerun =iotrace2-20261102-134441= (same args =TTI 56 56 56 8
+  12.5 12.5 12.5 0.0001 0.01 4 0.0001=, all disks, iotrace with setcap as
+  normal user, CapEff=0). Computation 2.79 s; clock error 0.41 us; 0
+  dropped. Analysis: =analysis-20261102-142915/=.
+  - Dirty pages of =.rsf@= (inode 1189013, 206848000 B): 206848000 B, all
+    from sf_pid 8115 (threads =CPU 0..3=), all between start and tasks_done.
+  - Disk W submitted (bio_queue): flusher =kworker/u32:*= 207.2 MB after
+    exit + 0.16 MB during the run; =jbd2= 0.35 MB; StarFletcher itself
+    24 KB before start; no other process.
+  - .rsf@ writeback: 100% after exit; background pass at exit+0.30 s
+    (54.5 MB), periodic at exit+5.40 s (152.3 MB).
+  - =bdp= never fired (small run, below the dirty thresholds): not
+    validated yet.
+  - munmap events include noise from =modprobe=; does not affect the
+    =.rsf@= numbers.
+  - =env.txt= says =tcc_commit=ef62f21=, but the code that ran had the
+    then-uncommitted changes now in =d41b89e..9ed5ddc=.
+- iotrace binary sha256 (santiago build):
+  =8bbb7498d38522ebfc1c82de1a65ad7d3df29610d59152001fcf591d8ec78f01=.
+
 ** 2026 Week 43 [Oct]
 *** 23-10-2026: iotrace on PCAD without system downloads
 Admin should not install packages. Plan: static iotrace built with Nix
@@ -1737,7 +1782,7 @@ iotrace/exp/iotrace2_starvz.sh <starvz-tools> data/local/iotrace2/<run>
     1.3 s windows also do, so this does not prove the cause.
   - Still all dirty pages of the file from the SF pid (14868, CPU 0..3).
 
-** NEXT [#A] IOTRACE3: Trace who does each write, from page dirtying to disk :impl:ebpf:io:
+** DONE [#A] IOTRACE3: Trace who does each write, from page dirtying to disk :impl:ebpf:io:
 :PROPERTIES:
 :ID:       iotrace3
 :CREATED:  [2026-10-23 Fri]
@@ -1774,21 +1819,32 @@ binary is final (sha256 will change).
 - [[file:iotrace/iotrace.h]]
 - [[file:iotrace/test/mmap_write.c]]
 - [[file:iotrace/exp/iotrace2_analyze.R]]
-*** Acceptance criteria [0/6]
-- [ ] Builds with the Makefile, no errors/warnings; 0 dropped events in all
+*** Acceptance criteria [6/6]
+- [X] Builds with the Makefile, no errors/warnings; 0 dropped events in all
       runs below (reported by iotrace).
-- [ ] dd oflag=direct of N MB: bio_queue W bytes with comm=dd == N exactly;
+- [X] dd oflag=direct of N MB: bio_queue W bytes with comm=dd == N exactly;
       pwrite64/write count sum for dd == N.
-- [ ] mmap_write of N MB: dirty_folio events of its inode with its pid
+- [X] mmap_write of N MB: dirty_folio events of its inode with its pid
       x 4096 within 5% of N; bio_queue W bytes by kworker/u* after exit
       within 5% of N; 0 bio_queue bytes by swapper/*.
-- [ ] IOTRACE2 rerun: dirty_folio bytes of the .rsf@ inode by SF pid within
+- [X] IOTRACE2 rerun: dirty_folio bytes of the .rsf@ inode by SF pid within
       5% of the .rsf@ size; 0 dirty_folio events on that inode by other pids.
-- [ ] IOTRACE2 rerun figure: colored by submitter, no swapper, non-SF
+- [X] IOTRACE2 rerun figure: colored by submitter, no swapper, non-SF
       writes listed with bytes per comm.
-- [ ] Runs as a normal user with setcap; new sha256 recorded for the admin.
+- [X] Runs as a normal user with setcap; new sha256 recorded for the admin.
 *** Verification
-(exact commands written while implementing)
+On santiago, from =~/graduation/tcc= (nvme0n1 = 259:0):
+#+begin_src sh
+PATH=$PATH:/usr/sbin make -C iotrace
+sudo iotrace/test/iotrace3_tests.sh rayan /dev/shm/iotrace3-<date> 256   # C2, C3
+python3 -I iotrace/test/iotrace3_check.py /dev/shm/iotrace3-<date>     # C1-C3
+sudo /usr/sbin/setcap cap_bpf,cap_perfmon+ep iotrace/iotrace           # C6
+DEV= iotrace/exp/iotrace2_run.sh ~/sf-runs/result-trace/bin/star-fletcher  # C4
+iotrace/exp/iotrace2_starvz.sh ~/sf-runs/result-starvz data/local/iotrace2/<run>
+<R-4.5.2-wrapper of result-starvz>/bin/Rscript iotrace/exp/iotrace2_analyze.R \
+  data/local/iotrace2/<run> data/local/iotrace2/<run>/analysis-<date> \
+  star-fletcher/config.yaml                                            # C4, C5
+#+end_src
 *** Open questions
 - Volume of writeback_dirty_folio: one event per 4 KiB folio (207 MB ->
   ~50k events; 15 GB -> ~3.7M). May need in-kernel aggregation per
@@ -1800,6 +1856,8 @@ binary is final (sha256 will change).
 - Verified 02-11-2026 on santiago (6.1.0-44, available_events): all events
   above exist.
 *** Log
+- 02-11-2026: done, see =* Work= / 02-11-2026 "IOTRACE3, who does each
+  write". All 6 criteria pass (1 run each). =bdp= not exercised yet (IOTRACE4).
 
 * Resume for TCC
 
