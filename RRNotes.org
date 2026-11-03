@@ -1859,6 +1859,104 @@ iotrace/exp/iotrace2_starvz.sh ~/sf-runs/result-starvz data/local/iotrace2/<run>
 - 02-11-2026: done, see =* Work= / 02-11-2026 "IOTRACE3, who does each
   write". All 6 criteria pass (1 run each). =bdp= not exercised yet (IOTRACE4).
 
+** NEXT [#A] IOTRACE4: Trace mmap I/O of StarFletcher with a .rsf@ 2x the RAM on santiago :exp:ebpf:io:mmap:
+:PROPERTIES:
+:ID:       iotrace4
+:CREATED:  [2026-11-03 Tue]
+:ENV:      local:linux-root (santiago)
+:BLOCKER:  ids(iotrace3)
+:ANSWERS:  H12 H15
+:END:
+*** Description
+With the current StarFletcher (mmap) and output every step, make the .rsf@
+2x the RAM (~15 GB on 7 GiB) so the kernel must write back during the run.
+Measure how much reaches the disk during the run and after exit, who
+submits it, whether the kernel throttles the StarPU workers (bdp) and how
+much write_block stalls. Answers the advisor's request for a larger problem
+that forces Linux not to buffer for long. Baseline for IOTRACE5.
+*** Scope
+- In: iotrace with all IOTRACE3 events, all disks; FxT on; STARPU_NCPU=4;
+  args =TTI 312 312 312 8 12.5 12.5 12.5 0.0001 0.01 4 0.0001= (volume
+  336^3, blocks 84^3 = 2.4 MB, 101 frames, .rsf@ 15324954624 B);
+  3 runs in sequence, nothing else running on santiago; analysis and
+  figure with iotrace2_analyze.R; write_block duration stats from StarVZ.
+- Out: PCAD (T6); direct_io (IOTRACE5); other sizes or dt_output.
+*** Related files
+- [[file:iotrace/exp/iotrace2_run.sh]]
+- [[file:iotrace/exp/iotrace2_starvz.sh]]
+- [[file:iotrace/exp/iotrace2_analyze.R]]
+- [[file:star-fletcher/src/io.c]]
+*** Acceptance criteria [0/5]
+- [ ] 3 runs complete; 0 dropped events; .rsf@ size == 15324954624 B;
+      clock error at anchor 2 < 10 us.
+- [ ] Dirty pages of the .rsf@ inode: bytes by the SF pid >= file size,
+      0 by other pids (per run).
+- [ ] .rsf@ writeback (wb_inode) split before tasks_done / tasks_done ->
+      exit / after exit, in bytes and % of the file, per run.
+- [ ] bdp events of the SF pid: calls, sleeps (pause > 0) and total pause
+      in ms (HZ = 250), per run (0 sleeps is a valid, recorded result).
+- [ ] write_block duration median, p99, max and count > 100 ms, per run;
+      timeline_workers_write figure coloured by submitter.
+*** Verification
+(exact commands written while implementing)
+*** Open questions
+- io.csv and FxT live on /dev/shm (tmpfs = RAM) during the run; ~3.7M
+  dirty events may take a few hundred MB of the 7 GiB (not measured).
+- Run time for 336^3 not measured (200^3 took ~45-49 s; scaling by volume
+  gives ~4 min, a guess).
+- Free RAM at start changed the 23-10 runs (vmscan in run 2): record
+  MemAvailable per run, maybe drop caches before each run.
+*** Log
+
+** TODO [#A] IOTRACE5: Trace the per-worker O_DIRECT files version (Colle direct_io) :exp:ebpf:io:direct:
+:PROPERTIES:
+:ID:       iotrace5
+:CREATED:  [2026-11-03 Tue]
+:ENV:      local:linux-root (santiago)
+:BLOCKER:  ids(iotrace4)
+:END:
+*** Description
+Colle's branch =direct_io= (=Sacolle/star-fletcher= =2952f2c=) writes each
+block with O_DIRECT pwrite inside write_block, to one file per CPU worker
+(=out-<name>-w<id>.bin=), with an index (=.meta=) and =scripts/congeal.py=
+to rebuild the .rsf@. The disk cost moves into the StarPU tasks. Run it
+with the same args as IOTRACE4 and compare: where the I/O time goes, how
+much StarPU hides, and whether the workers stall.
+*** Scope
+- In: star-fletcher branch from upstream =direct_io= + our anchors
+  (=fc8dbbd=) + the =star-fletcher-trace= flake package; same args, 3 runs,
+  same scripts (analysis using the inodes of all .bin files); congeal and
+  compare with an IOTRACE4 .rsf@.
+- Out: our own IO_MODE/per-slab design (IMPL2, IMPL3); MPI branch
+  (=dc2b3e4=, one file per rank); PCAD.
+*** Related files
+- [[file:star-fletcher/src/io.c]]
+- [[file:star-fletcher/src/main.c]]
+- [[file:star-fletcher/scripts/congeal.py]] (comes with the branch)
+- [[file:iotrace/exp/iotrace2_analyze.R]]
+*** Acceptance criteria [0/5]
+- [ ] Branch builds with FxT and anchors; one run with the small IOTRACE2
+      args gives all 4 anchors.
+- [ ] 3 runs with IOTRACE4 args complete; 0 dropped events; clock error
+      < 10 us.
+- [ ] bio_queue W bytes by the SF pid within 1% of the sum of the .bin
+      sizes; 0 dirty events on the .bin inodes.
+- [ ] congeal.py output identical (cmp) to an IOTRACE4 .rsf@, or the
+      difference reported.
+- [ ] One table IOTRACE4 vs IOTRACE5 (mean and sd of 3 runs): computation
+      time, time to exit, % of file bytes on disk after exit, write_block
+      median/p99/max; figure with the same layout.
+*** Verification
+(exact commands written while implementing)
+*** Open questions
+- Is the computation deterministic so mmap and congealed outputs are
+  bitwise equal? (not checked)
+- fsync of every worker file in io_state_finish: where does it fall
+  relative to the anchors (before io_closed?).
+- Padding: each block rounded up to the O_DIRECT alignment (4096) on disk
+  (+0.03% for 84^3 blocks).
+*** Log
+
 * Resume for TCC
 
 *Title:* Beyond the I/O Wall: Hiding I/O Latency in Task-Based Runtime Systems
